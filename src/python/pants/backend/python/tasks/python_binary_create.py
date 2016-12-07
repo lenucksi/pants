@@ -71,7 +71,7 @@ class PythonBinaryCreate(PythonTask):
         atomic_copy(pex_path, pex_copy)
         self.context.log.info('created pex {}'.format(os.path.relpath(pex_copy, get_buildroot())))
 
-  def create_binary(self, binary, results_dir):
+  def create_binary(self, binary, results_dir): # TODO: binary represents the python_binary target here -> i.e. shebang can come from there
     interpreter = self.select_interpreter_for_targets(binary.closure())
 
     run_info_dict = self.context.run_tracker.run_info.get_as_dict()
@@ -81,8 +81,11 @@ class PythonBinaryCreate(PythonTask):
     pexinfo = binary.pexinfo.copy()
     pexinfo.build_properties = build_properties
 
-    with self.temporary_chroot(interpreter=interpreter, pex_info=pexinfo, targets=[binary],
-                               platforms=binary.platforms) as chroot:
+    print("pybinarycreate createbinary binary: {}, binary.shebang:{}".format(binary, binary.shebang))
+
+    with self.temporary_chroot(interpreter=interpreter, pex_info=pexinfo, targets=[binary], # TODO: Erstes element der list in targets enthaelt also auch das shebang
+                               platforms=binary.platforms) as chroot: # BUG: hierueber hinaus geht es nicht, failed als indexError out of range
+      print("pybinarycreate createbinary in chroot context: {}")
       pex_path = os.path.join(results_dir, '{}.pex'.format(binary.name))
       chroot.package_pex(pex_path)
       return pex_path

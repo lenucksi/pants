@@ -68,6 +68,7 @@ class PythonChroot(object):
                builder,
                targets,
                platforms,
+#               shebang=None, # TODO: Kann ggf. weg
                extra_requirements=None,
                log=None):
     self._python_setup = python_setup
@@ -80,8 +81,10 @@ class PythonChroot(object):
     self._targets = targets
     self._platforms = platforms
     self._extra_requirements = list(extra_requirements) if extra_requirements else []
+#    self._shebang = shebang # TODO: Kann ggf. weg
     self._logger = log or logger
 
+    self.debug('pychroot invoked with targets:{} and chroot:{}'.format(self._targets, self._shebang))
     # Note: unrelated to the general pants artifact cache.
     self._artifact_cache_root = os.path.join(
       self._python_setup.artifact_cache_dir, str(self._interpreter.identity))

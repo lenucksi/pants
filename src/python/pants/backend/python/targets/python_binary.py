@@ -39,6 +39,7 @@ class PythonBinary(PythonTarget):
                repositories=None,         # pex option
                indices=None,              # pex option
                ignore_errors=False,       # pex option
+               shebang=None,              # pex option
                platforms=(),
                **kwargs):
     """
@@ -79,10 +80,19 @@ class PythonBinary(PythonTarget):
       'indices': PrimitiveField(maybe_list(indices or [])),
       'ignore_errors': PrimitiveField(bool(ignore_errors)),
       'platforms': PrimitiveField(tuple(maybe_list(platforms or []))),
+      'shebang': PrimitiveField(shebang or None),
     })
 
+    print('\n pybinary target invoked, platforms: {} \n payload:{} \n kwargs:{}'.format(platforms,payload.fields,kwargs))
+
     sources = [] if source is None else [source]
+    #shebang = None if not kwargs.has_key('shebang') else kwargs['shebang']
+    #payload.add_field('shebang',shebang)
+
+    #super(PythonBinary, self).__init__(sources=sources, payload=payload, shebang=shebang, **kwargs)
     super(PythonBinary, self).__init__(sources=sources, payload=payload, **kwargs)
+
+    print('\n pybinary target post kwargs detection, platforms: {} \n payload:{} \n kwargs:{} '.format(platforms,payload.fields,kwargs))
 
     if source is None and entry_point is None:
       raise TargetDefinitionException(self,
@@ -130,6 +140,13 @@ class PythonBinary(PythonTarget):
       return None
 
   @property
+  def shebang(self):
+    if self.payload.shebang:
+      return self.payload.shebang
+    else:
+      return None
+
+  @property
   def pexinfo(self):
     info = PexInfo.default()
     for repo in self.repositories:
@@ -140,5 +157,6 @@ class PythonBinary(PythonTarget):
     info.always_write_cache = self.payload.always_write_cache
     info.inherit_path = self.payload.inherit_path
     info.entry_point = self.entry_point
+#    info.shebang = self.payload.shebang
     info.ignore_errors = self.payload.ignore_errors
     return info

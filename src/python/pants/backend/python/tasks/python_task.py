@@ -42,6 +42,7 @@ class PythonTask(Task):
     self._compatibilities = self.get_options().interpreter or [b'']
     self._interpreter_cache = None
     self._interpreter = None
+    # self._shebang = None
 
   @property
   def interpreter_cache(self):
@@ -64,6 +65,10 @@ class PythonTask(Task):
     """Pick an interpreter compatible with all the specified targets."""
     return self.interpreter_cache.select_interpreter_for_targets(targets)
 
+  #@property
+  #def shebang(self):
+  #  return self._shebang
+
   @property
   def chroot_cache_dir(self):
     return PythonSetup.global_instance().chroot_cache_dir
@@ -76,13 +81,13 @@ class PythonTask(Task):
   def thrift_binary_factory(self):
     return ThriftBinary.Factory.scoped_instance(self).create
 
-  def create_chroot(self, interpreter, builder, targets, platforms, extra_requirements):
+  def create_chroot(self, interpreter, builder, targets, platforms, extra_requirements): # TODO: Wird von allen Chroot relateten sachen hier genutzt
     return PythonChroot(python_setup=PythonSetup.global_instance(),
                         python_repos=PythonRepos.global_instance(),
                         ivy_bootstrapper=self.ivy_bootstrapper,
                         thrift_binary_factory=self.thrift_binary_factory,
                         interpreter=interpreter,
-                        builder=builder,
+                        builder=builder, # TODO: Der muss bei erstellung den noetigen shebang haben
                         targets=targets,
                         platforms=platforms,
                         extra_requirements=extra_requirements,
@@ -117,7 +122,12 @@ class PythonTask(Task):
     # created when that pex was built.
     pex_info = PexInfo.from_pex(path)
     # Now create a PythonChroot wrapper without dumping it.
-    builder = PEXBuilder(path=path, interpreter=interpreter, pex_info=pex_info, copy=True)
+    print('pytask cached chroot targets={} interpreter={}, pexinfo={} targets[0]={}, targets[0].shebang={}'.format(targets,interpreter,pex_info, targets[0], targets[0].shebang))
+    builder = PEXBuilder(path=path, interpreter=interpreter, pex_info=pex_info, copy=True) # TODO: Hier ggf. ansetzen - wenn PEXInfo oder sonstiges ein Shebang enthaelt, dann im Builder set_shebang aufrufen
+    # if self._shebang:
+    if targets[0].shebang:
+      print('pytask buildchroot got shebang in targets: {}'.format(targets[0].shebang))
+      builder.set_shebang(targets[0].shebang)
     return self.create_chroot(interpreter=interpreter,
                               builder=builder,
                               targets=targets,
@@ -137,7 +147,16 @@ class PythonTask(Task):
   def _build_chroot(self, path, interpreter, pex_info, targets, platforms,
                      extra_requirements=None, executable_file_content=None):
     """Create a PythonChroot with the specified args."""
+    print('pytask _buildchroot targets={} interpreter={}, pexinfo.shebang={} pexinfo={} targets[0]={} targets[0].shebang={}'.format(targets,interpreter,pex_info.dump(),targets[0],targets[0].shebang ))
     builder = PEXBuilder(path=path, interpreter=interpreter, pex_info=pex_info, copy=True)
+    #if pex_info.shebang:
+    if targets[0].shebang:
+      #print('pytask buildchroot got shebang in pexinfo: {}'.format(pex_info.shebang))
+      print('pytask buildchroot got shebang in targets: {}'.format(targets[0].shebang))
+      builder.set_shebang(targets[0].shebang)
+    else:
+      print('pytask buildchroot NO SHEBANG in targets: {}'.format(targets[0].shebang))
+
     with self.context.new_workunit('chroot'):
       chroot = self.create_chroot(
         interpreter=interpreter,
