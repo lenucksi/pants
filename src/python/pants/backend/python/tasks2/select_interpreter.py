@@ -50,6 +50,7 @@ class SelectInterpreter(Task):
 
   def execute(self):
     interpreter = None
+
     python_tgts = self.context.targets(lambda tgt: isinstance(tgt, PythonTarget))
     fs = PythonInterpreterFingerprintStrategy()
     with self.invalidated(python_tgts, fingerprint_strategy=fs) as invalidation_check:
@@ -67,17 +68,22 @@ class SelectInterpreter(Task):
     if not interpreter:
       interpreter = self._get_interpreter(interpreter_path_file)
 
-    self.context.products.get_data(PythonInterpreter, lambda: interpreter)
+    self.context.products.register_data(PythonInterpreter, interpreter)
 
   @memoized_method
   def _interpreter_cache(self):
-    interpreter_cache = PythonInterpreterCache(PythonSetup.global_instance(),
+    setup = PythonSetup.global_instance()
+    interpreter_cache = PythonInterpreterCache(setup,
                                                PythonRepos.global_instance(),
                                                logger=self.context.log.debug)
     # Cache setup's requirement fetching can hang if run concurrently by another pants proc.
     self.context.acquire_lock()
     try:
-      interpreter_cache.setup()
+      paths = setup.interpreter_search_paths
+      if paths:
+        interpreter_cache.setup(paths)
+      else:
+        interpreter_cache.setup()
     finally:
       self.context.release_lock()
     return interpreter_cache

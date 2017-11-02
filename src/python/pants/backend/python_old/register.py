@@ -12,9 +12,6 @@ from pants.backend.python.tasks.python_isort import IsortPythonTask
 from pants.backend.python.tasks.python_repl import PythonRepl
 from pants.backend.python.tasks.python_run import PythonRun
 from pants.backend.python.tasks.setup_py import SetupPy
-from pants.backend.python.tasks2.gather_sources import GatherSources
-from pants.backend.python.tasks2.resolve_requirements import ResolveRequirements
-from pants.backend.python.tasks2.select_interpreter import SelectInterpreter
 from pants.base.deprecated import deprecated
 from pants.goal.task_registrar import TaskRegistrar as task
 
@@ -32,7 +29,3 @@ def register_goals():
   task(name='py', action=PythonRepl).install('repl')
   task(name='setup-py', action=SetupPy).install()
   task(name='isort', action=IsortPythonTask).install('fmt')
-
-  task(name='interpreter', action=SelectInterpreter).install('pyprep')
-  task(name='requirements', action=ResolveRequirements).install('pyprep')
-  task(name='sources', action=GatherSources).install('pyprep')

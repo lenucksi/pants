@@ -6,10 +6,11 @@ from __future__ import (absolute_import, division, generators, nested_scopes, pr
                         unicode_literals, with_statement)
 
 import logging
+import threading
 
 import mock
 
-from pants.pantsd.pants_daemon import PantsDaemon, _StreamLogger
+from pants.pantsd.pants_daemon import PantsDaemon, _LoggerStream
 from pants.pantsd.service.pants_service import PantsService
 from pants.util.contextutil import stdio_as
 from pants_test.base_test import BaseTest
@@ -18,18 +19,18 @@ from pants_test.base_test import BaseTest
 PATCH_OPTS = dict(autospec=True, spec_set=True)
 
 
-class StreamLoggerTest(BaseTest):
+class LoggerStreamTest(BaseTest):
 
   TEST_LOG_LEVEL = logging.INFO
 
   def test_write(self):
     mock_logger = mock.Mock()
-    _StreamLogger(mock_logger, self.TEST_LOG_LEVEL).write('testing 1 2 3')
+    _LoggerStream(mock_logger, self.TEST_LOG_LEVEL, None).write('testing 1 2 3')
     mock_logger.log.assert_called_once_with(self.TEST_LOG_LEVEL, 'testing 1 2 3')
 
   def test_write_multiline(self):
     mock_logger = mock.Mock()
-    _StreamLogger(mock_logger, self.TEST_LOG_LEVEL).write('testing\n1\n2\n3\n\n')
+    _LoggerStream(mock_logger, self.TEST_LOG_LEVEL, None).write('testing\n1\n2\n3\n\n')
     mock_logger.log.assert_has_calls([
       mock.call(self.TEST_LOG_LEVEL, 'testing'),
       mock.call(self.TEST_LOG_LEVEL, '1'),
@@ -38,23 +39,26 @@ class StreamLoggerTest(BaseTest):
     ])
 
   def test_flush(self):
-    _StreamLogger(mock.Mock(), self.TEST_LOG_LEVEL).flush()
+    _LoggerStream(mock.Mock(), self.TEST_LOG_LEVEL, None).flush()
 
 
 class PantsDaemonTest(BaseTest):
   def setUp(self):
     super(PantsDaemonTest, self).setUp()
-    self.pantsd = PantsDaemon('test_buildroot',
+    lock = threading.RLock()
+    mock_options = mock.Mock()
+    mock_options.pants_subprocessdir = 'non_existent_dir'
+    self.pantsd = PantsDaemon(None,
+                              'test_buildroot',
                               'test_work_dir',
                               logging.INFO,
-                              log_dir='/non_existent',
-                              metadata_base_dir=self.subprocess_dir)
-    self.pantsd.set_services([])
-    self.pantsd.set_socket_map({})
-
+                              lock,
+                              [],
+                              {},
+                              '/tmp/pants_test_metadata_dir',
+                              mock_options)
     self.mock_killswitch = mock.Mock()
     self.pantsd._kill_switch = self.mock_killswitch
-
     self.mock_service = mock.create_autospec(PantsService, spec_set=True)
 
   @mock.patch('os.close', **PATCH_OPTS)

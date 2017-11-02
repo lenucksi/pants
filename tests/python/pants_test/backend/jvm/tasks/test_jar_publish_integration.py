@@ -9,7 +9,7 @@ import os
 import re
 
 from pants.base.build_environment import get_buildroot
-from pants.util.contextutil import temporary_dir
+from pants.util.contextutil import open_zip, temporary_dir
 from pants.util.dirutil import safe_rmtree
 from pants_test.pants_run_integration_test import PantsRunIntegrationTest
 
@@ -84,7 +84,6 @@ class JarPublishIntegrationTest(PantsRunIntegrationTest):
                        'org.pantsbuild.testproject.publish/jvm-example-lib_2.11/publish.properties',
                        'org.pantsbuild.testproject.publish.hello/welcome_2.11/publish.properties'],
                       extra_options=['--doc-scaladoc-skip'],
-                      expected_primary_artifact_count=3,
                       assert_publish_config_contents=True)
 
   def test_java_publish(self):
@@ -109,8 +108,7 @@ class JarPublishIntegrationTest(PantsRunIntegrationTest):
                       ['org.pantsbuild.testproject.publish.protobuf/protobuf-java/'
                        'publish.properties',
                        'org.pantsbuild.testproject.protobuf/distance/publish.properties'],
-                      extra_options=['--doc-javadoc-skip'],
-                      expected_primary_artifact_count=2)
+                      extra_options=['--doc-javadoc-skip'])
 
   def test_named_snapshot(self):
     name = "abcdef0123456789"
@@ -219,9 +217,42 @@ class JarPublishIntegrationTest(PantsRunIntegrationTest):
       extra_options=['--override={}=1.2.3'.format(target)],
       assert_publish_config_contents=True)
 
+  def test_invalidate_resources(self):
+    """Tests that resource changes invalidate publishes."""
+    source_root = 'testprojects/src/java'
+    target_relative_to_sourceroot = 'org/pantsbuild/testproject/publish/hello/greet'
+    target = os.path.join(source_root, target_relative_to_sourceroot)
+    resource_relative_to_sourceroot = os.path.join(target_relative_to_sourceroot, 'TEMP.txt')
+    resource = os.path.join(source_root, resource_relative_to_sourceroot)
+
+    with self.temporary_workdir() as workdir:
+      def publish(resource_content):
+        with temporary_dir() as publish_dir:
+          with self.temporary_file_content(resource, resource_content):
+            # Validate that the target depends on the relevant resource.
+            self.assertIn(resource, self.run_pants(['filedeps', target]).stdout_data)
+
+            pants_run = self.run_pants_with_workdir(['publish.jar',
+                                                     '--local={}'.format(publish_dir),
+                                                     '--named-snapshot=X',
+                                                     '--no-dryrun',
+                                                     target
+                                                    ],
+                                                    workdir=workdir)
+            self.assert_success(pants_run)
+          # Validate that the content in the resulting jar matches.
+          jar = os.path.join(publish_dir,
+                             'org/pantsbuild/testproject/publish/hello-greet/X/hello-greet-X.jar')
+          with open_zip(jar, mode='r') as j:
+            with j.open(resource_relative_to_sourceroot) as jar_entry:
+              self.assertEquals(resource_content, jar_entry.read())
+
+      # Publish the same target twice with different resource content.
+      publish('one')
+      publish('two')
+
   def publish_test(self, target, artifacts, pushdb_files, extra_options=None, extra_config=None,
-                   extra_env=None, expected_primary_artifact_count=1, success_expected=True,
-                   assert_publish_config_contents=False):
+                   extra_env=None, success_expected=True, assert_publish_config_contents=False):
     """Tests that publishing the given target results in the expected output.
 
     :param target: Target to test.
@@ -229,7 +260,6 @@ class JarPublishIntegrationTest(PantsRunIntegrationTest):
     :param pushdb_files: list of pushdb files that would be created if this weren't a local publish
     :param extra_options: Extra command-line options to the pants run.
     :param extra_config: Extra pants.ini configuration for the pants run.
-    :param expected_primary_artifact_count: Number of artifacts we expect to be published.
     :param extra_env: Extra environment variables for the pants run.
     :param assert_publish_config_contents: Test the contents of the generated ivy and pom file.
            If set to True, compares the generated ivy.xml and pom files in

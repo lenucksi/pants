@@ -5,11 +5,14 @@
 from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
                         unicode_literals, with_statement)
 
+import os
+import re
+import xml.etree.ElementTree as ET
 from abc import abstractmethod
 from threading import Timer
 
 from pants.base.exceptions import ErrorWhileTesting
-from pants.util.timeout import Timeout, TimeoutReached
+from pants.util.process_handler import subprocess
 
 
 class TestRunnerTaskMixin(object):
@@ -63,6 +66,108 @@ class TestRunnerTaskMixin(object):
       all_targets = self._get_targets()
       self._execute(all_targets)
 
+  def report_all_info_for_single_test(self, scope, target, test_name, test_info):
+    """Add all of the test information for a single test.
+
+    Given the dict of test information
+    {'time': 0.124, 'result_code': 'success', 'classname': 'some.test.class'}
+    iterate through each item and report the single item with _report_test_info.
+
+    :param string scope: The scope for which we are reporting the information.
+    :param Target target: The target that we want to store the test information under.
+    :param string test_name: The test's name.
+    :param dict test_info: The test's information, including run duration and result.
+    """
+    for test_info_key, test_info_val in test_info.items():
+      key_list = [test_name, test_info_key]
+      self._report_test_info(scope, target, key_list, test_info_val)
+
+  def _report_test_info(self, scope, target, keys, test_info):
+    """Add test information to target information.
+
+    :param string scope: The scope for which we are reporting information.
+    :param Target target: The target that we want to store the test information under.
+    :param list of string keys: The keys that will point to the information being stored.
+    :param primitive test_info: The information being stored.
+    """
+    if target and scope:
+      target_type = target.type_alias
+      self.context.run_tracker.report_target_info('GLOBAL', target, ['target_type'], target_type)
+      self.context.run_tracker.report_target_info(scope, target, keys, test_info)
+
+  @staticmethod
+  def parse_test_info(xml_path, error_handler, additional_testcase_attributes=None):
+    """Parses the junit file for information needed about each test.
+
+    Will include:
+      - test name
+      - test result
+      - test run time duration or None if not a parsable float
+
+    If additional test case attributes are defined, then it will include those as well.
+
+    :param string xml_path: The path of the xml file to be parsed.
+    :param function error_handler: The error handler function.
+    :param list of string additional_testcase_attributes: A list of additional attributes belonging
+           to each testcase that should be included in test information.
+    :return: A dictionary of test information.
+    """
+    tests_in_path = {}
+    testcase_attributes = additional_testcase_attributes or []
+
+    SUCCESS = 'success'
+    SKIPPED = 'skipped'
+    FAILURE = 'failure'
+    ERROR = 'error'
+
+    _XML_MATCHER = re.compile(r'^TEST-.+\.xml$')
+
+    class ParseError(Exception):
+      """Indicates an error parsing a xml report file."""
+
+      def __init__(self, xml_path, cause):
+        super(ParseError, self).__init__('Error parsing test result file {}: {}'
+          .format(xml_path, cause))
+        self.xml_path = xml_path
+        self.cause = cause
+
+    def parse_xml_file(xml_file_path):
+      try:
+        root = ET.parse(xml_file_path).getroot()
+        for testcase in root.iter('testcase'):
+          test_info = {}
+
+          try:
+            test_info.update({'time': float(testcase.attrib.get('time'))})
+          except (TypeError, ValueError):
+            test_info.update({'time': None})
+
+          for attribute in testcase_attributes:
+            test_info[attribute] = testcase.attrib.get(attribute)
+
+          result = SUCCESS
+          if next(testcase.iter('error'), None) is not None:
+            result = ERROR
+          elif next(testcase.iter('failure'), None) is not None:
+            result = FAILURE
+          elif next(testcase.iter('skipped'), None) is not None:
+            result = SKIPPED
+          test_info.update({'result_code': result})
+
+          tests_in_path.update({testcase.attrib.get('name', ''): test_info})
+
+      except (ET.ParseError, ValueError) as e:
+        error_handler(ParseError(xml_file_path, e))
+
+    if os.path.isdir(xml_path):
+      for name in os.listdir(xml_path):
+        if _XML_MATCHER.match(name):
+          parse_xml_file(os.path.join(xml_path, name))
+    else:
+      parse_xml_file(xml_path)
+
+    return tests_in_path
+
   def _get_test_targets_for_spawn(self):
     """Invoked by _spawn_and_wait to know targets being executed. Defaults to _get_test_targets().
 
@@ -81,37 +186,32 @@ class TestRunnerTaskMixin(object):
 
     process_handler = self._spawn(*args, **kwargs)
 
-    def _graceful_terminate(handler, wait_time):
-      """
-      Returns a function which attempts to terminate the process gracefully.
+    def maybe_terminate(wait_time):
+      if process_handler.poll() < 0:
+        process_handler.terminate()
 
-      If terminate doesn't work after wait_time seconds, do a kill.
-      """
-
-      def terminator():
-        handler.terminate()
         def kill_if_not_terminated():
-          if handler.poll() is None:
-            # We can't use the context logger because it might not exist.
+          if process_handler.poll() < 0:
+            # We can't use the context logger because it might not exist when this delayed function
+            # is executed by the Timer below.
             import logging
             logger = logging.getLogger(__name__)
             logger.warn('Timed out test did not terminate gracefully after {} seconds, killing...'
                         .format(wait_time))
-            handler.kill()
+            process_handler.kill()
 
         timer = Timer(wait_time, kill_if_not_terminated)
         timer.start()
 
-      return terminator
-
     try:
-      with Timeout(timeout,
-                   threading_timer=Timer,
-                   abort_handler=_graceful_terminate(process_handler,
-                                                     self.get_options().timeout_terminate_wait)):
-        return process_handler.wait()
-    except TimeoutReached as e:
+      return process_handler.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+      # Since we no longer surface the actual underlying exception, we log.error here
+      # to ensure the output indicates why the test has suddenly failed.
+      self.context.log.error('FAILURE: Timeout of {} seconds reached.'.format(timeout))
       raise ErrorWhileTesting(str(e), failed_targets=test_targets)
+    finally:
+      maybe_terminate(wait_time=self.get_options().timeout_terminate_wait)
 
   @abstractmethod
   def _spawn(self, *args, **kwargs):
@@ -119,8 +219,6 @@ class TestRunnerTaskMixin(object):
 
     :rtype: ProcessHandler
     """
-
-    raise NotImplementedError
 
   def _timeout_for_target(self, target):
     timeout = getattr(target, 'timeout', None)

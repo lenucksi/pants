@@ -148,7 +148,7 @@ class Parser(object):
     mutex_map = defaultdict(list)
     for args, kwargs in self._unnormalized_option_registrations_iter():
       self._validate(args, kwargs)
-      dest = kwargs.get('dest') or self._select_dest(args)
+      dest = self.parse_dest(*args, **kwargs)
 
       # Compute the values provided on the command line for this option.  Note that there may be
       # multiple values, for any combination of the following reasons:
@@ -242,7 +242,7 @@ class Parser(object):
     """
     def normalize_kwargs(args, orig_kwargs):
       nkwargs = copy.copy(orig_kwargs)
-      dest = nkwargs.get('dest') or self._select_dest(args)
+      dest = self.parse_dest(*args, **nkwargs)
       nkwargs['dest'] = dest
       if not ('default' in nkwargs and isinstance(nkwargs['default'], RankedValue)):
         nkwargs['default'] = self._compute_value(dest, nkwargs, [])
@@ -395,11 +395,17 @@ class Parser(object):
 
   _ENV_SANITIZER_RE = re.compile(r'[.-]')
 
-  def _select_dest(self, args):
-    """Select the dest name for the option.
+  @staticmethod
+  def parse_dest(*args, **kwargs):
+    """Select the dest name for an option registration.
 
-    '--foo-bar' -> 'foo_bar' and '-x' -> 'x'.
+    If an explicit `dest` is specified, returns that and otherwise derives a default from the
+    option flags where '--foo-bar' -> 'foo_bar' and '-x' -> 'x'.
     """
+    explicit_dest = kwargs.get('dest')
+    if explicit_dest:
+      return explicit_dest
+
     arg = next((a for a in args if a.startswith('--')), args[0])
     return arg.lstrip('-').replace('-', '_')
 
@@ -514,7 +520,17 @@ class Parser(object):
     # instances of RankedValue (so none will be None, although they may wrap a None value).
     ranked_vals = list(reversed(list(RankedValue.prioritized_iter(*values_to_rank))))
 
-    # Record info about the derivation of each of the values.
+    def record_option(value, rank, option_details=None):
+      deprecation_version = kwargs.get('removal_version')
+      self._option_tracker.record_option(scope=self._scope,
+                                         option=dest,
+                                         value=value,
+                                         rank=rank,
+                                         deprecation_version=deprecation_version,
+                                         details=option_details)
+
+    # Record info about the derivation of each of the contributing values.
+    detail_history = []
     for ranked_val in ranked_vals:
       if ranked_val.rank in (RankedValue.CONFIG, RankedValue.CONFIG_DEFAULT):
         details = config_details
@@ -522,12 +538,9 @@ class Parser(object):
         details = env_details
       else:
         details = None
-      self._option_tracker.record_option(scope=self._scope,
-                                         option=dest,
-                                         value=ranked_val.value,
-                                         rank=ranked_val.rank,
-                                         deprecation_version=kwargs.get('removal_version'),
-                                         details=details)
+      if details:
+        detail_history.append(details)
+      record_option(value=ranked_val.value, rank=ranked_val.rank, option_details=details)
 
     # Helper function to check various validity constraints on final option values.
     def check(val):
@@ -562,6 +575,10 @@ class Parser(object):
     else:
       ret = ranked_vals[-1]
       check(ret.value)
+
+    # Record info about the derivation of the final value.
+    merged_details = ', '.join(detail_history) if detail_history else None
+    record_option(value=ret.value, rank=ret.rank, option_details=merged_details)
 
     # All done!
     return ret

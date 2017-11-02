@@ -39,6 +39,7 @@ target(
     ':run_jvm_prep_command',
     ':scala_repl',
     ':scaladoc_gen',
+    ':scalafix',
     ':scalafmt',
     ':scalastyle',
     ':unpack_jars',
@@ -104,16 +105,17 @@ python_library(
   name = 'bundle_create',
   sources = ['bundle_create.py'],
   dependencies = [
+    '3rdparty/python/twitter/commons:twitter.common.collections',
     ':classpath_products',
     ':jvm_binary_task',
-    '3rdparty/python/twitter/commons:twitter.common.collections',
     'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/base:build_environment',
+    'src/python/pants/base:deprecated',
     'src/python/pants/base:exceptions',
     'src/python/pants/build_graph',
     'src/python/pants/fs',
-    'src/python/pants/util:fileutil',
     'src/python/pants/util:dirutil',
+    'src/python/pants/util:fileutil',
     'src/python/pants/util:objects',
   ],
 )
@@ -344,6 +346,7 @@ python_library(
   sources = globs('reports/*.py'),
   dependencies = [
     'src/python/pants/base:mustache',
+    'src/python/pants/util:desktop',
     'src/python/pants/util:dirutil',
     'src/python/pants/util:meta',
     'src/python/pants/util:strutil',
@@ -359,22 +362,23 @@ python_library(
   name = 'junit_run',
   sources = ['junit_run.py'],
   dependencies = [
-    '3rdparty/python:six',
     '3rdparty/python/twitter/commons:twitter.common.collections',
+    '3rdparty/python:six',
     ':classpath_util',
     ':coverage',
     ':jvm_task',
     ':jvm_tool_task_mixin',
     ':reports',
-    'src/python/pants/backend/jvm:argfile',
     'src/python/pants/backend/jvm/subsystems:junit',
     'src/python/pants/backend/jvm/subsystems:jvm_platform',
     'src/python/pants/backend/jvm/targets:java',
     'src/python/pants/backend/jvm/targets:jvm',
+    'src/python/pants/backend/jvm:argfile',
     'src/python/pants/base:build_environment',
     'src/python/pants/base:exceptions',
     'src/python/pants/base:workunit',
     'src/python/pants/build_graph',
+    'src/python/pants/invalidation',
     'src/python/pants/java/distribution',
     'src/python/pants/java/junit',
     'src/python/pants/java:executor',
@@ -382,10 +386,10 @@ python_library(
     'src/python/pants/task',
     'src/python/pants/util:argutil',
     'src/python/pants/util:contextutil',
-    'src/python/pants/util:desktop',
     'src/python/pants/util:dirutil',
     'src/python/pants/util:memo',
     'src/python/pants/util:meta',
+    'src/python/pants/util:process_handler',
     'src/python/pants/util:strutil',
   ],
 )
@@ -515,6 +519,7 @@ python_library(
     'src/python/pants/binaries:binary_util',
     'src/python/pants/util:desktop',
     'src/python/pants/util:dirutil',
+    'src/python/pants/util:process_handler',
   ],
 )
 
@@ -571,6 +576,7 @@ python_library(
   dependencies = [
     ':classpath_products',
     ':jvm_tool_task_mixin',
+    'src/python/pants/backend/jvm/subsystems:java',
     'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/util:dirutil',
     'src/python/pants/util:memo',
@@ -627,14 +633,38 @@ python_library(
 )
 
 python_library(
-  name = 'scalafmt',
-  sources = ['scalafmt.py'],
+  name = 'scalafix',
+  sources = ['scalafix.py'],
   dependencies = [
-    'src/python/pants/java/jar',
+    ':scala_rewrite_base',
     'src/python/pants/backend/jvm/tasks:nailgun_task',
     'src/python/pants/base:exceptions',
     'src/python/pants/build_graph',
+    'src/python/pants/java/jar',
     'src/python/pants/option',
+  ]
+)
+
+python_library(
+  name = 'scalafmt',
+  sources = ['scalafmt.py'],
+  dependencies = [
+    ':scala_rewrite_base',
+    'src/python/pants/backend/jvm/tasks:nailgun_task',
+    'src/python/pants/base:exceptions',
+    'src/python/pants/build_graph',
+    'src/python/pants/java/jar',
+    'src/python/pants/option',
+  ]
+)
+
+python_library(
+  name = 'scala_rewrite_base',
+  sources = ['scala_rewrite_base.py'],
+  dependencies = [
+    'src/python/pants/backend/jvm/tasks:nailgun_task',
+    'src/python/pants/base:exceptions',
+    'src/python/pants/build_graph',
     'src/python/pants/util:meta',
     'src/python/pants/util:memo',
   ]

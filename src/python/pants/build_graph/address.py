@@ -8,7 +8,7 @@ from __future__ import (absolute_import, division, generators, nested_scopes, pr
 import os
 from collections import namedtuple
 
-from pants.base.deprecated import deprecated, deprecated_conditional
+from pants.base.deprecated import deprecated
 from pants.util.dirutil import longest_dir_prefix
 from pants.util.strutil import strip_prefix
 
@@ -165,11 +165,11 @@ class Address(object):
                                  .format(spec=spec_path, name=name))
 
     banned_chars = BANNED_CHARS_IN_TARGET_NAME & set(name)
-    # raise InvalidateTargetName after deprecation
-    deprecated_conditional(lambda: len(banned_chars) > 0, '1.4.0dev0',
-                           'banned chars found in target name',
-                           '{banned_chars} not allowed in target name: {name}'
-                           .format(banned_chars=banned_chars, name=name))
+
+    if banned_chars:
+      raise InvalidTargetName('banned chars found in target name',
+                              '{banned_chars} not allowed in target name: {name}'
+                              .format(banned_chars=banned_chars, name=name))
 
   def __init__(self, spec_path, target_name):
     """

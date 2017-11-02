@@ -20,6 +20,7 @@ Created by running `./build-support/bin/contributors.sh`.
 + Chris Chen
 + Chris Heisterkamp
 + Chris Pesto
++ Christopher Livingston
 + Cody Gibb
 + Craig Schertz
 + Dan Davydov
@@ -27,15 +28,20 @@ Created by running `./build-support/bin/contributors.sh`.
 + Dan Harrison
 + Daniel Anderson
 + Daniel Bentley
++ Daniel Peebles
++ Daniel Wagner-Hall
 + Dave Brewster
++ David Katz
 + David Taylor
 + David Turner
 + Derek Young
 + Divij Rajkumar
 + Dominic Hamon
++ Dorothy Ordogh
 + Drew Rothstein
 + Dumitru Daniliuc
 + Ebube Chuba
++ Eitan Adler
 + Emily Caveness
 + Eric Ayers
 + Eric Danielson
@@ -47,6 +53,7 @@ Created by running `./build-support/bin/contributors.sh`.
 + Florian Leibert
 + Gabriel Gonzalez
 + Garrett Malmquist
++ Gary M. Josack
 + Harley Cooper
 + Hwasung Lee
 + Igor Morozov
@@ -56,6 +63,7 @@ Created by running `./build-support/bin/contributors.sh`.
 + Jackson Davis
 + Jake Donham
 + James Bench
++ James Koch
 + James Mouradian
 + Jason Jackson
 + Jason Song
@@ -74,6 +82,7 @@ Created by running `./build-support/bin/contributors.sh`.
 + John Townsend
 + Jon Boulle
 + Jonathan Coveney
++ Jonathan D. Simms
 + Jonathan Sokolowski
 + Joshua Cohen
 + Joshua Humphries
@@ -116,6 +125,7 @@ Created by running `./build-support/bin/contributors.sh`.
 + Nitay Joffe
 + Ny Saechao
 + Oliver Gould
++ Pankaj Gupta
 + Patrick Lawson
 + Paul Groudas
 + Peiyu Wang
@@ -128,6 +138,7 @@ Created by running `./build-support/bin/contributors.sh`.
 + Senthil Kumaran
 + Sergey Serebryakov
 + Simeon Franklin
++ Stefan Sauer
 + Stu Hood
 + Tansy Arron-Walker
 + Ted Dziuba

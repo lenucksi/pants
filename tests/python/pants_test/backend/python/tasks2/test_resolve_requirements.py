@@ -6,7 +6,6 @@ from __future__ import (absolute_import, division, generators, nested_scopes, pr
                         unicode_literals, with_statement)
 
 import os
-import subprocess
 
 from pex.interpreter import PythonInterpreter
 
@@ -18,6 +17,7 @@ from pants.backend.python.tasks2.resolve_requirements import ResolveRequirements
 from pants.base.build_environment import get_buildroot
 from pants.python.python_repos import PythonRepos
 from pants.util.contextutil import temporary_file
+from pants.util.process_handler import subprocess
 from pants_test.tasks.task_test_base import TaskTestBase
 
 
@@ -90,7 +90,16 @@ class ResolveRequirementsTest(TaskTestBase):
     # pycparser is a dependency of cffi only on CPython.  We might as well check for it,
     # as extra verification that we correctly fetch transitive dependencies.
     if PythonInterpreter.get().identity.interpreter == 'CPython':
-      expected_name_and_platforms.add(('pycparser-2.17', 'any'))
+      # N.B. Since pycparser is a floating transitive dep of cffi, we do a version-agnostic
+      # check here to avoid master breakage as new pycparser versions are released on pypi.
+      self.assertTrue(
+        any(
+          (package.startswith('pycparser-') and platform == 'any')
+          for package, platform
+          in names_and_platforms
+        ),
+        'could not find pycparser in transitive dependencies!'
+      )
 
     self.assertTrue(expected_name_and_platforms.issubset(names_and_platforms),
                     '{} is not a subset of {}'.format(expected_name_and_platforms,

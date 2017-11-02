@@ -13,12 +13,14 @@ from six import string_types
 from twitter.common.collections import OrderedSet, maybe_list
 
 from pants.base.build_environment import get_buildroot
+from pants.base.deprecated import deprecated
 from pants.base.exceptions import TargetDefinitionException
 from pants.base.fingerprint_strategy import DefaultFingerprintStrategy
 from pants.base.hash_utils import hash_all
 from pants.base.payload import Payload
 from pants.base.payload_field import PrimitiveField
 from pants.base.validation import assert_list
+from pants.build_graph.address import Address
 from pants.build_graph.address_lookup_error import AddressLookupError
 from pants.build_graph.target_addressable import TargetAddressable
 from pants.build_graph.target_scopes import Scope
@@ -29,6 +31,49 @@ from pants.util.memo import memoized_property
 
 
 logger = logging.getLogger(__name__)
+
+
+class SyntheticTargetNotFound(Exception):
+  pass
+
+
+def _get_synthetic_target(target, codegen_dep):
+  """Find a codegen_dep's corresponding synthetic target in the dependencies of the given target.
+
+  TODO: This lookup represents a workaround to avoid including logic about exports at codegen time.
+  We should likely make SimpleCodegenTask aware of exports, so that it can clone exports to
+  generated targets while updating the exports with relevant synthetic target specs.
+    see https://github.com/pantsbuild/pants/issues/4936
+  """
+  for dep in target.dependencies:
+    if dep != codegen_dep and dep.is_synthetic and dep.derived_from == codegen_dep:
+      return dep
+  raise SyntheticTargetNotFound('No synthetic target is found for thrift target: {}'.format(codegen_dep))
+
+
+def _resolve_strict_dependencies(target, dep_context):
+  for declared in target.dependencies:
+    if type(declared) in dep_context.alias_types:
+      # Is an alias. Recurse to expand.
+      for r in declared.strict_dependencies(dep_context):
+        yield r
+    else:
+      yield declared
+
+    for export in _resolve_exports(declared, dep_context):
+      yield export
+
+
+def _resolve_exports(target, dep_context):
+  for export in target.exports(dep_context):
+    if type(export) in dep_context.alias_types:
+      # If exported target is an alias, expand its dependencies.
+      for dep in export.strict_dependencies(dep_context):
+        yield dep
+    else:
+      yield export
+      for exp in _resolve_exports(export, dep_context):
+        yield exp
 
 
 class AbstractTarget(object):
@@ -44,6 +89,14 @@ class AbstractTarget(object):
     :return: A tuple of subsystem types.
     """
     return tuple()
+
+  @classmethod
+  def alias(cls):
+    """Subclasses should return their desired BUILD file alias.
+
+    :rtype: string
+    """
+    raise NotImplementedError()
 
   # TODO: Kill this in 1.5.0.dev0, once this old-style resource specification is gone.
   @property
@@ -124,12 +177,10 @@ class Target(AbstractTarget):
   :API: public
   """
 
-
   class RecursiveDepthError(AddressLookupError):
     """Raised when there are too many recursive calls to calculate the fingerprint."""
-    pass
 
-  _MAX_RECURSION_DEPTH=250
+  _MAX_RECURSION_DEPTH = 250
 
   class WrongNumberOfAddresses(Exception):
     """Internal error, too many elements in Addresses
@@ -150,8 +201,6 @@ class Target(AbstractTarget):
       """An unknown keyword argument was supplied to Target."""
 
     options_scope = 'target-arguments'
-    deprecated_options_scope = 'unknown-arguments'
-    deprecated_options_scope_removal_version = '1.4.0.dev0'
 
     @classmethod
     def register_options(cls, register):
@@ -159,9 +208,12 @@ class Target(AbstractTarget):
                help='Map of target name to a list of keyword arguments that should be ignored if a '
                     'target receives them unexpectedly. Typically used to allow usage of arguments '
                     'in BUILD files that are not yet available in the current version of pants.')
-      register('--implicit-sources', advanced=True, type=bool,
+      register('--implicit-sources', advanced=True, default=True, type=bool,
+               removal_version='1.6.0.dev0',
+               removal_hint='Implicit sources are now the default.',
                help='If True, Pants will infer the value of the sources argument for certain '
-                    'target types, if they do not have explicit sources specified.')
+                    'target types, if they do not have explicit sources specified. '
+                    'See http://www.pantsbuild.org/build_files.html#target-definitions')
 
     @classmethod
     def check(cls, target, kwargs):
@@ -369,6 +421,8 @@ class Target(AbstractTarget):
     self._cached_fingerprint_map = {}
     self._cached_all_transitive_fingerprint_map = {}
     self._cached_direct_transitive_fingerprint_map = {}
+    self._cached_strict_dependencies_map = {}
+    self._cached_exports_map = {}
     if no_cache:
       self.add_labels('no_cache')
     if kwargs:
@@ -437,7 +491,6 @@ class Target(AbstractTarget):
     """
     :API: public
     """
-    pass
 
   def mark_invalidation_hash_dirty(self):
     """Invalidates memoized fingerprints for this target, including those in payloads.
@@ -449,6 +502,8 @@ class Target(AbstractTarget):
     self._cached_fingerprint_map = {}
     self._cached_all_transitive_fingerprint_map = {}
     self._cached_direct_transitive_fingerprint_map = {}
+    self._cached_strict_dependencies_map = {}
+    self._cached_exports_map = {}
     self.mark_extra_invalidation_hash_dirty()
     self.payload.mark_dirty()
 
@@ -517,7 +572,6 @@ class Target(AbstractTarget):
     """
     :API: public
     """
-    pass
 
   def inject_dependency(self, dependency_address):
     """
@@ -529,29 +583,35 @@ class Target(AbstractTarget):
       dependee.mark_transitive_invalidation_hash_dirty()
     self._build_graph.walk_transitive_dependee_graph([self.address], work=invalidate_dependee)
 
-  @property
+  @memoized_property
   def _sources_field(self):
     sources_field = self.payload.get_field('sources')
     if sources_field is not None:
       return sources_field
     return SourcesField(sources=FilesetWithSpec.empty(self.address.spec_path))
 
-  def has_sources(self, extension=''):
-    """
+  def has_sources(self, extension=None):
+    """Return `True` if this target owns sources; optionally of the given `extension`.
+
     :API: public
 
-    :param string extension: suffix of filenames to test for
-    :return: True if the target contains sources that match the optional extension suffix
+    :param string extension: Optional suffix of filenames to test for.
+    :return: `True` if the target contains sources that match the optional extension suffix.
     :rtype: bool
     """
-    return self._sources_field.has_sources(extension)
+    source_paths = self._sources_field.source_paths
+    if not source_paths:
+      return False
+    if not extension:
+      return True
+    return any(source.endswith(extension) for source in source_paths)
 
   def sources_relative_to_buildroot(self):
     """
     :API: public
     """
     if self.has_sources():
-      return self.payload.sources.relative_to_buildroot()
+      return self._sources_field.relative_to_buildroot()
     else:
       return []
 
@@ -575,7 +635,7 @@ class Target(AbstractTarget):
     """
     :API: public
     """
-    return self.payload.sources.sources
+    return self._sources_field.sources
 
   @property
   def derived_from(self):
@@ -612,6 +672,7 @@ class Target(AbstractTarget):
     return self._build_graph.get_concrete_derived_from(self.address)
 
   @property
+  @deprecated('1.5.0.dev0', 'Use `Target.compute_injectable_specs()` instead.')
   def traversable_specs(self):
     """
     :API: public
@@ -622,6 +683,7 @@ class Target(AbstractTarget):
     return []
 
   @property
+  @deprecated('1.5.0.dev0', 'Use `Target.compute_dependency_specs()` instead.')
   def traversable_dependency_specs(self):
     """
     :API: public
@@ -631,6 +693,56 @@ class Target(AbstractTarget):
     :rtype: list of strings
     """
     return []
+
+  @staticmethod
+  def _validate_target_representation_args(kwargs, payload):
+    assert (kwargs is None) ^ (payload is None), 'must provide either kwargs or payload'
+    assert (kwargs is None) or isinstance(kwargs, dict), (
+      'expected a `dict` object for kwargs, instead found a {}'.format(type(kwargs))
+    )
+    assert (payload is None) or isinstance(payload, Payload), (
+      'expected a `Payload` object for payload, instead found a {}'.format(type(payload))
+    )
+
+  @classmethod
+  def compute_injectable_specs(cls, kwargs=None, payload=None):
+    """Given either pre-Target.__init__() kwargs or a post-Target.__init__() payload, compute the
+    specs to inject as non-dependencies in the same vein as the prior `traversable_specs`.
+
+    :API: public
+
+    :param dict kwargs: The pre-Target.__init__() kwargs dict.
+    :param Payload payload: The post-Target.__init__() Payload object.
+    :yields: Spec strings representing dependencies of this target.
+    """
+    cls._validate_target_representation_args(kwargs, payload)
+    # N.B. This pattern turns this method into a non-yielding generator, which is helpful for
+    # subclassing.
+    return
+    yield
+
+  @classmethod
+  def compute_dependency_specs(cls, kwargs=None, payload=None):
+    """Given either pre-Target.__init__() kwargs or a post-Target.__init__() payload, compute the
+    full set of dependency specs in the same vein as the prior `traversable_dependency_specs`.
+
+    N.B. This is a temporary bridge to span the gap between v2 "Fields" products vs v1 `BuildGraph`
+    `Target` object representations. See:
+
+      https://github.com/pantsbuild/pants/issues/3560
+      https://github.com/pantsbuild/pants/issues/3561
+
+    :API: public
+
+    :param dict kwargs: The pre-Target.__init__() kwargs dict.
+    :param Payload payload: The post-Target.__init__() Payload object.
+    :yields: Spec strings representing dependencies of this target.
+    """
+    cls._validate_target_representation_args(kwargs, payload)
+    # N.B. This pattern turns this method into a non-yielding generator, which is helpful for
+    # subclassing.
+    return
+    yield
 
   @property
   def dependencies(self):
@@ -642,6 +754,55 @@ class Target(AbstractTarget):
     """
     return [self._build_graph.get_target(dep_address)
             for dep_address in self._build_graph.dependencies_of(self.address)]
+
+  def exports(self, dep_context):
+    """
+    :param dep_context: A DependencyContext with configuration for the request.
+
+    :return: targets that this target directly exports. Note that this list is not transitive,
+      but that exports are transitively expanded during the computation of strict_dependencies.
+    :rtype: list of Target
+    """
+    exports = self._cached_exports_map.get(dep_context, None)
+    if exports is None:
+      exports = []
+      for export in getattr(self, 'export_specs', []):
+        if not isinstance(export, Target):
+          export_spec = export
+          export_addr = Address.parse(export_spec, relative_to=self.address.spec_path)
+          export = self._build_graph.get_target(export_addr)
+          if export not in self.dependencies:
+            # A target can only export its dependencies.
+            raise TargetDefinitionException(
+                self,
+                'Invalid export: "{}" must also be a dependency.'.format(export_spec))
+        if isinstance(export, dep_context.codegen_types):
+          export = _get_synthetic_target(self, export)
+        exports.append(export)
+      self._cached_exports_map[dep_context] = exports
+    return exports
+
+  def strict_dependencies(self, dep_context):
+    """
+    :param dep_context: A DependencyContext with configuration for the request.
+    :return: targets that this target "strictly" depends on. This set of dependencies contains
+      only directly declared dependencies, with two exceptions:
+        1) aliases are expanded transitively
+        2) the strict_dependencies of targets exported targets exported by
+      strict_dependencies (transitively).
+    :rtype: list of Target
+    """
+    strict_deps = self._cached_strict_dependencies_map.get(dep_context, None)
+    if strict_deps is None:
+      strict_deps = OrderedSet()
+      for declared in _resolve_strict_dependencies(self, dep_context):
+        if isinstance(declared, dep_context.compiler_plugin_types):
+          strict_deps.update(declared.closure(bfs=True, **dep_context.target_closure_kwargs))
+        else:
+          strict_deps.add(declared)
+      strict_deps = list(strict_deps)
+      self._cached_strict_dependencies_map[dep_context] = strict_deps
+    return strict_deps
 
   @property
   def dependents(self):

@@ -8,7 +8,6 @@ from __future__ import (absolute_import, division, generators, nested_scopes, pr
 import os
 import re
 import shutil
-import subprocess
 
 from twitter.common.collections import OrderedSet
 
@@ -19,6 +18,7 @@ from pants.binaries.thrift_binary import ThriftBinary
 from pants.option.custom_types import target_option
 from pants.task.simple_codegen_task import SimpleCodegenTask
 from pants.util.memo import memoized_property
+from pants.util.process_handler import subprocess
 
 
 class ApacheThriftGenBase(SimpleCodegenTask):
@@ -70,6 +70,9 @@ class ApacheThriftGenBase(SimpleCodegenTask):
     bases = OrderedSet(tgt.target_base for tgt in target.closure() if self.is_gentarget(tgt))
     for base in bases:
       target_cmd.extend(('-I', base))
+
+    if hasattr(target, 'compiler_args'):
+      target_cmd.extend(list(target.compiler_args or []))
 
     target_cmd.extend(('-o', target_workdir))
 

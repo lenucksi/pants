@@ -40,6 +40,8 @@ python_library(
   name = 'compile_context',
   sources = ['compile_context.py'],
   dependencies = [
+    'src/python/pants/backend/codegen/protobuf/java',
+    'src/python/pants/backend/codegen/thrift/java',
     'src/python/pants/build_graph',
     'src/python/pants/util:contextutil',
   ]
@@ -113,6 +115,7 @@ python_library(
     'src/python/pants/backend/jvm/subsystems:java',
     'src/python/pants/backend/jvm/subsystems:scala_platform',
     'src/python/pants/backend/jvm/subsystems:shader',
+    'src/python/pants/backend/jvm/subsystems:zinc',
     'src/python/pants/backend/jvm/targets:java',
     'src/python/pants/backend/jvm/targets:scala',
     'src/python/pants/backend/jvm/zinc',

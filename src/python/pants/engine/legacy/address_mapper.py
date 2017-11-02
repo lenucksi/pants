@@ -27,20 +27,19 @@ class LegacyAddressMapper(AddressMapper):
   This allows tasks to use the context's address_mapper when the v2 engine is enabled.
   """
 
-  def __init__(self, scheduler, engine, build_root):
+  def __init__(self, scheduler, build_root):
     self._scheduler = scheduler
-    self._engine = engine
     self._build_root = build_root
 
   def scan_build_files(self, base_path):
     request = self._scheduler.execution_request([BuildFilesCollection], [(DescendantAddresses(base_path))])
 
-    result = self._engine.execute(request)
+    result = self._scheduler.execute(request)
     if result.error:
       raise result.error
 
     build_files_set = set()
-    for state in result.root_products.values():
+    for _, state in result.root_products:
       for build_files in state.value.dependencies:
         build_files_set.update(f.path for f in build_files.files_content.dependencies)
 
@@ -70,20 +69,26 @@ class LegacyAddressMapper(AddressMapper):
 
   def _internal_scan_specs(self, specs, fail_fast=True, missing_is_fatal=True):
     request = self._scheduler.execution_request([BuildFileAddresses], specs)
-    result = self._engine.execute(request)
+    result = self._scheduler.execute(request)
     if result.error:
       raise self.BuildFileScanError(str(result.error))
-    root_entries = self._scheduler.root_entries(request)
 
     addresses = set()
-    for (spec, _), state in root_entries.items():
-      if missing_is_fatal:
-        if isinstance(state, Throw) and isinstance(state.exc, ResolveError):
-          raise self.BuildFileScanError(
-            'Spec `{}` does not match any targets.\n{}'.format(spec.to_spec_string(), str(state.exc)))
-        elif not state.value.dependencies:
-          raise self.BuildFileScanError(
-            'Spec `{}` does not match any targets.'.format(spec.to_spec_string()))
+    for (spec, _), state in result.root_products:
+      if isinstance(state, Throw):
+        if isinstance(state.exc, ResolveError):
+          if missing_is_fatal:
+            raise self.BuildFileScanError(
+              'Spec `{}` does not match any targets.\n{}'.format(spec.to_spec_string(), str(state.exc)))
+          else:
+            # NB: ignore Throws containing ResolveErrors because they are due to missing targets / files
+            continue
+        else:
+          raise self.BuildFileScanError(str(state.exc))
+      elif missing_is_fatal and not state.value.dependencies:
+        raise self.BuildFileScanError(
+          'Spec `{}` does not match any targets.'.format(spec.to_spec_string()))
+
       addresses.update(state.value.dependencies)
     return addresses
 

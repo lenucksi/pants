@@ -5,6 +5,7 @@
 from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
                         unicode_literals, with_statement)
 
+import itertools
 import logging
 
 from twitter.common.collections import OrderedSet
@@ -17,11 +18,11 @@ from pants.build_graph.address import Address
 from pants.build_graph.address_lookup_error import AddressLookupError
 from pants.build_graph.build_graph import BuildGraph
 from pants.build_graph.remote_sources import RemoteSources
+from pants.build_graph.target import Target
 from pants.engine.addressable import BuildFileAddresses, Collection
 from pants.engine.fs import PathGlobs, Snapshot
 from pants.engine.legacy.structs import BundleAdaptor, BundlesField, SourcesField, TargetAdaptor
 from pants.engine.mapper import ResolveError
-from pants.engine.nodes import Return
 from pants.engine.rules import TaskRule, rule
 from pants.engine.selectors import Select, SelectDependencies, SelectProjection, SelectTransitive
 from pants.source.wrapped_globs import EagerFilesetWithSpec, FilesetRelPathWrapper
@@ -30,6 +31,16 @@ from pants.util.objects import datatype
 
 
 logger = logging.getLogger(__name__)
+
+
+def target_types_from_symbol_table(symbol_table):
+  """Given a LegacySymbolTable, return the concrete target types constructed for each alias."""
+  aliases = symbol_table.aliases()
+  target_types = dict(aliases.target_types)
+  for alias, factory in aliases.target_macro_factories.items():
+    target_type, = factory.target_types
+    target_types[alias] = target_type
+  return target_types
 
 
 class _DestWrapper(datatype('DestWrapper', ['target_types'])):
@@ -49,35 +60,24 @@ class LegacyBuildGraph(BuildGraph):
     """Raised when command line spec is not a valid directory"""
 
   @classmethod
-  def create(cls, scheduler, engine, symbol_table_cls):
+  def create(cls, scheduler, symbol_table):
     """Construct a graph given a Scheduler, Engine, and a SymbolTable class."""
-    return cls(scheduler, engine, cls._get_target_types(symbol_table_cls))
+    return cls(scheduler, target_types_from_symbol_table(symbol_table))
 
-  def __init__(self, scheduler, engine, target_types):
+  def __init__(self, scheduler, target_types):
     """Construct a graph given a Scheduler, Engine, and a SymbolTable class.
 
     :param scheduler: A Scheduler that is configured to be able to resolve HydratedTargets.
-    :param engine: An Engine subclass to execute calls to `inject`.
-    :param symbol_table_cls: A SymbolTable class used to instantiate Target objects. Must match
+    :param symbol_table: A SymbolTable instance used to instantiate Target objects. Must match
       the symbol table installed in the scheduler (TODO: see comment in `_instantiate_target`).
     """
     self._scheduler = scheduler
-    self._engine = engine
     self._target_types = target_types
     super(LegacyBuildGraph, self).__init__()
 
   def clone_new(self):
     """Returns a new BuildGraph instance of the same type and with the same __init__ params."""
-    return LegacyBuildGraph(self._scheduler, self._engine, self._target_types)
-
-  @staticmethod
-  def _get_target_types(symbol_table_cls):
-    aliases = symbol_table_cls.aliases()
-    target_types = dict(aliases.target_types)
-    for alias, factory in aliases.target_macro_factories.items():
-      target_type, = factory.target_types
-      target_types[alias] = target_type
-    return target_types
+    return LegacyBuildGraph(self._scheduler, self._target_types)
 
   def _index(self, roots):
     """Index from the given roots into the storage provided by the base class.
@@ -88,23 +88,9 @@ class LegacyBuildGraph(BuildGraph):
     new_targets = list()
 
     # Index the ProductGraph.
-    for node, state in roots.items():
-      if type(state) is not Return:
-        # NB: ResolveError means that a target was not found, which is a common user facing error.
-        # TODO Come up with a better error reporting mechanism so that we don't need this as a special case.
-        #      Possibly as part of https://github.com/pantsbuild/pants/issues/4446
-        if isinstance(state.exc, ResolveError):
-          raise AddressLookupError(str(state.exc))
-        else:
-          trace = '\n'.join(self._scheduler.trace())
-          raise AddressLookupError(
-              'Build graph construction failed for {}:\n{}'.format(node, trace))
-      if type(state.value) is not HydratedTargets:
-        raise TypeError('Expected roots to hold {}; got: {}'.format(
-          HydratedTargets, type(state.value)))
-
+    for product in roots:
       # We have a successful HydratedTargets value (for a particular input Spec).
-      for hydrated_target in state.value.dependencies:
+      for hydrated_target in product.dependencies:
         target_adaptor = hydrated_target.adaptor
         address = target_adaptor.address
         all_addresses.add(address)
@@ -122,10 +108,21 @@ class LegacyBuildGraph(BuildGraph):
         if is_dependency:
           deps_to_inject.add((target.address, address))
 
+    self.apply_injectables(new_targets)
+
     for target in new_targets:
-      for spec in target.traversable_dependency_specs:
+      traversables = [target.compute_dependency_specs(payload=target.payload)]
+      # Only poke `traversable_dependency_specs` if a concrete implementation is defined
+      # in order to avoid spurious deprecation warnings.
+      if type(target).traversable_dependency_specs is not Target.traversable_dependency_specs:
+        traversables.append(target.traversable_dependency_specs)
+      for spec in itertools.chain(*traversables):
         inject(target, spec, is_dependency=True)
-      for spec in target.traversable_specs:
+
+      traversables = [target.compute_injectable_specs(payload=target.payload)]
+      if type(target).traversable_specs is not Target.traversable_specs:
+        traversables.append(target.traversable_specs)
+      for spec in itertools.chain(*traversables):
         inject(target, spec, is_dependency=False)
 
     # Inject all addresses, then declare injected dependencies.
@@ -142,9 +139,15 @@ class LegacyBuildGraph(BuildGraph):
     target = self._instantiate_target(target_adaptor)
     self._target_by_address[address] = target
 
-    # Link its declared dependencies, which will be indexed independently.
-    self._target_dependencies_by_address[address].update(target_adaptor.dependencies)
     for dependency in target_adaptor.dependencies:
+      if dependency in self._target_dependencies_by_address[address]:
+        raise self.DuplicateAddressError(
+          'Addresses in dependencies must be unique. '
+          "'{spec}' is referenced more than once by target '{target}'."
+          .format(spec=dependency.spec, target=address.spec)
+        )
+      # Link its declared dependencies, which will be indexed independently.
+      self._target_dependencies_by_address[address].add(dependency)
       self._target_dependees_by_address[dependency].add(address)
     return target
 
@@ -233,23 +236,26 @@ class LegacyBuildGraph(BuildGraph):
   def _inject(self, subjects):
     """Inject Targets into the graph for each of the subjects and yield the resulting addresses."""
     logger.debug('Injecting to %s: %s', self, subjects)
-    request = self._scheduler.execution_request([HydratedTargets, BuildFileAddresses], subjects)
+    try:
+      product_results = self._scheduler.products_request([HydratedTargets, BuildFileAddresses],
+                                                         subjects)
+    except ResolveError as e:
+      # NB: ResolveError means that a target was not found, which is a common user facing error.
+      raise AddressLookupError(str(e))
+    except Exception as e:
+      raise AddressLookupError(
+        'Build graph construction failed: {} {}'.format(type(e).__name__, str(e))
+      )
 
-    result = self._engine.execute(request)
-    if result.error:
-      raise result.error
     # Update the base class indexes for this request.
-    root_entries = self._scheduler.root_entries(request)
-    address_entries = {k: v for k, v in root_entries.items() if k[1].product is BuildFileAddresses}
-    target_entries = {k: v for k, v in root_entries.items() if k[1].product is HydratedTargets}
-    self._index(target_entries)
+    self._index(product_results[HydratedTargets])
 
     yielded_addresses = set()
-    for (subject, _), state in address_entries.items():
-      if not state.value.dependencies:
+    for subject, product in zip(subjects, product_results[BuildFileAddresses]):
+      if not product.dependencies:
         raise self.InvalidCommandLineSpecError(
           'Spec {} does not match any targets.'.format(subject))
-      for address in state.value.dependencies:
+      for address in product.dependencies:
         if address not in yielded_addresses:
           yielded_addresses.add(address)
           yield address
@@ -302,16 +308,15 @@ def hydrate_target(target_adaptor, hydrated_fields):
                         tuple(target_adaptor.dependencies))
 
 
-def _eager_fileset_with_spec(spec_path, filespec, snapshot):
-  files = tuple(fast_relpath(fd.path, spec_path) for fd in snapshot.files)
+def _eager_fileset_with_spec(spec_path, filespec, snapshot, include_dirs=False):
+  fds = snapshot.path_stats if include_dirs else snapshot.files
+  files = tuple(fast_relpath(fd.path, spec_path) for fd in fds)
 
   relpath_adjusted_filespec = FilesetRelPathWrapper.to_filespec(filespec['globs'], spec_path)
   if filespec.has_key('exclude'):
     relpath_adjusted_filespec['exclude'] = [FilesetRelPathWrapper.to_filespec(e['globs'], spec_path)
                                             for e in filespec['exclude']]
 
-  # NB: In order to preserve declared ordering, we record a list of matched files
-  # independent of the file hash dict.
   return EagerFilesetWithSpec(spec_path,
                               relpath_adjusted_filespec,
                               files=files,
@@ -341,16 +346,20 @@ def hydrate_bundles(bundles_field, snapshot_list):
   for bundle, filespecs, snapshot in zipped:
     spec_path = bundles_field.address.spec_path
     kwargs = bundle.kwargs()
+    # NB: We `include_dirs=True` because bundle filesets frequently specify directories in order
+    # to trigger a (deprecated) default inclusion of their recursive contents. See the related
+    # deprecation in `pants.backend.jvm.tasks.bundle_create`.
     kwargs['fileset'] = _eager_fileset_with_spec(getattr(bundle, 'rel_path', spec_path),
                                                  filespecs,
-                                                 snapshot)
+                                                 snapshot,
+                                                 include_dirs=True)
     bundles.append(BundleAdaptor(**kwargs))
   return HydratedField('bundles', bundles)
 
 
-def create_legacy_graph_tasks(symbol_table_cls):
+def create_legacy_graph_tasks(symbol_table):
   """Create tasks to recursively parse the legacy graph."""
-  symbol_table_constraint = symbol_table_cls.constraint()
+  symbol_table_constraint = symbol_table.constraint()
   return [
     transitive_hydrated_targets,
     TaskRule(

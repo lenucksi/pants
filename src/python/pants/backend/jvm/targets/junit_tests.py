@@ -7,7 +7,6 @@ from __future__ import (absolute_import, division, generators, nested_scopes, pr
 
 from pants.backend.jvm.subsystems.junit import JUnit
 from pants.backend.jvm.subsystems.jvm_platform import JvmPlatform
-from pants.backend.jvm.targets.jar_library import JarLibrary
 from pants.backend.jvm.targets.jvm_target import JvmTarget
 from pants.base.exceptions import TargetDefinitionException
 from pants.base.payload import Payload
@@ -56,7 +55,8 @@ class JUnitTests(DeprecatedJavaTestsAlias):
                threads=None, **kwargs):
     """
     :param str cwd: working directory (relative to the build root) for the tests under this
-      target. If unspecified (None), the working directory will be controlled by junit_run's --cwd.
+      target. If unspecified (None), the working directory will be controlled by junit_run's --cwd
+      and --chroot options.
     :param str test_platform: The name of the platform (defined under the jvm-platform subsystem) to
       use for running tests (that is, a key into the --jvm-platform-platforms dictionary). If
       unspecified, the platform will default to the same one used for compilation.
@@ -109,15 +109,13 @@ class JUnitTests(DeprecatedJavaTestsAlias):
     # applicable labels - fixup the 'java' misnomer.
     self.add_labels('java', 'tests')
 
-  @property
-  def traversable_dependency_specs(self):
-    for spec in super(JUnitTests, self).traversable_dependency_specs:
+  @classmethod
+  def compute_dependency_specs(cls, kwargs=None, payload=None):
+    for spec in super(JUnitTests, cls).compute_dependency_specs(kwargs, payload):
       yield spec
-    junit_addr = JUnit.global_instance().library_address()
-    if not self._build_graph.contains_address(junit_addr):
-      self._build_graph.inject_synthetic_target(junit_addr, JarLibrary, jars=[JUnit.LIBRARY_JAR],
-                                                scope='forced')
-    yield junit_addr.spec
+
+    for spec in JUnit.global_instance().injectables_specs_for_key('library'):
+      yield spec
 
   @property
   def test_platform(self):

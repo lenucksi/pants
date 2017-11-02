@@ -13,13 +13,13 @@ import six
 from pants.base.project_tree import Dir
 from pants.base.specs import (AscendantAddresses, DescendantAddresses, SiblingAddresses,
                               SingleAddress)
-from pants.build_graph.address import Address
+from pants.build_graph.address import Address, BuildFileAddress
 from pants.engine.addressable import (AddressableDescriptor, BuildFileAddresses, Collection,
                                       Exactly, TypeConstraintError)
 from pants.engine.fs import FilesContent, PathGlobs, Snapshot
 from pants.engine.mapper import AddressFamily, AddressMap, AddressMapper, ResolveError
 from pants.engine.objects import Locatable, SerializableFactory, Validatable
-from pants.engine.rules import SingletonRule, TaskRule, rule
+from pants.engine.rules import RootRule, SingletonRule, TaskRule, rule
 from pants.engine.selectors import Select, SelectDependencies, SelectProjection
 from pants.engine.struct import Struct
 from pants.util.objects import datatype
@@ -81,9 +81,7 @@ def parse_address_family(address_mapper, path, build_files):
       continue
     address_maps.append(AddressMap.parse(filecontent_product.path,
                                          filecontent_product.content,
-                                         address_mapper.symbol_table_cls,
-                                         address_mapper.parser_cls,
-                                         address_mapper.exclude_patterns))
+                                         address_mapper.parser))
   return AddressFamily.create(path.path, address_maps)
 
 
@@ -231,17 +229,36 @@ def _hydrate(item_type, spec_path, **kwargs):
 
 
 @rule(BuildFileAddresses,
-      [SelectDependencies(AddressFamily, BuildDirs, field_types=(Dir,)),
+      [Select(AddressMapper),
+       SelectDependencies(AddressFamily, BuildDirs, field_types=(Dir,)),
        Select(_SPECS_CONSTRAINT)])
-def addresses_from_address_families(address_families, spec):
-  """Given a list of AddressFamilies and a Spec, return matching Addresses."""
+def addresses_from_address_families(address_mapper, address_families, spec):
+  """Given a list of AddressFamilies and a Spec, return matching Addresses.
+
+  Raises a ResolveError if:
+     - there were no matching AddressFamilies, or
+     - the Spec matches no addresses for SingleAddresses.
+  """
+  if not address_families:
+    raise ResolveError('Path "{}" contains no BUILD files.'.format(spec.directory))
+
+  def exclude_address(address):
+    if address_mapper.exclude_patterns:
+      address_str = address.spec
+      return any(p.search(address_str) is not None for p in address_mapper.exclude_patterns)
+    return False
+
   if type(spec) in (DescendantAddresses, SiblingAddresses, AscendantAddresses):
-    addresses = tuple(a for af in address_families for a in af.addressables.keys())
+    addresses = tuple(a
+                      for af in address_families
+                      for a in af.addressables.keys()
+                      if not exclude_address(a))
   elif type(spec) is SingleAddress:
     # TODO Could assert len(address_families) == 1, as it should always be true in this case.
     addresses = tuple(a
                       for af in address_families
-                      for a in af.addressables.keys() if a.target_name == spec.name)
+                      for a in af.addressables.keys()
+                      if a.target_name == spec.name and not exclude_address(a))
     if not addresses:
       if len(address_families) == 1:
         _raise_did_you_mean(address_families[0], spec.name)
@@ -299,13 +316,13 @@ def _recursive_dirname(f):
 BuildFilesCollection = Collection.of(BuildFiles)
 
 
-def create_graph_rules(address_mapper, symbol_table_cls):
+def create_graph_rules(address_mapper, symbol_table):
   """Creates tasks used to parse Structs from BUILD files.
 
   :param address_mapper_key: The subject key for an AddressMapper instance.
-  :param symbol_table_cls: A SymbolTable class to provide symbols for Address lookups.
+  :param symbol_table: A SymbolTable instance to provide symbols for Address lookups.
   """
-  symbol_table_constraint = symbol_table_cls.constraint()
+  symbol_table_constraint = symbol_table.constraint()
   return [
     TaskRule(BuildFilesCollection,
              [SelectDependencies(BuildFiles, BuildDirs, field_types=(Dir,))],
@@ -330,4 +347,11 @@ def create_graph_rules(address_mapper, symbol_table_cls):
     addresses_from_address_families,
     filter_build_dirs,
     spec_to_globs,
+    # Root rules representing parameters that might be provided via root subjects.
+    RootRule(Address),
+    RootRule(BuildFileAddress),
+    RootRule(AscendantAddresses),
+    RootRule(DescendantAddresses),
+    RootRule(SiblingAddresses),
+    RootRule(SingleAddress),
   ]

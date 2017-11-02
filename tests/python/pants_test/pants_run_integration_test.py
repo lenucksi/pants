@@ -8,7 +8,6 @@ from __future__ import (absolute_import, division, generators, nested_scopes, pr
 import ConfigParser
 import os
 import shutil
-import subprocess
 import unittest
 from collections import namedtuple
 from contextlib import contextmanager
@@ -23,6 +22,7 @@ from pants.fs.archive import ZIP
 from pants.subsystem.subsystem import Subsystem
 from pants.util.contextutil import environment_as, pushd, temporary_dir
 from pants.util.dirutil import safe_mkdir, safe_mkdir_for, safe_open
+from pants.util.process_handler import SubprocessProcessHandler, subprocess
 from pants_test.testutils.file_test_util import check_symlinks, contains_exact_files
 
 
@@ -97,7 +97,7 @@ class PantsRunIntegrationTest(unittest.TestCase):
   def has_python_version(cls, version):
     """Returns true if the current system has the specified version of python.
 
-    :param version: A python version string, such as 2.6, 3.
+    :param version: A python version string, such as 2.7, 3.
     """
     try:
       subprocess.call(['python%s' % version, '-V'])
@@ -158,7 +158,7 @@ class PantsRunIntegrationTest(unittest.TestCase):
       return ret
 
   def run_pants_with_workdir(self, command, workdir, config=None, stdin_data=None, extra_env=None,
-                             build_root=None, **kwargs):
+                             build_root=None, tee_output=False, **kwargs):
 
     args = [
       '--no-pantsrc',
@@ -186,7 +186,7 @@ class PantsRunIntegrationTest(unittest.TestCase):
       ini_file_name = os.path.join(workdir, 'pants.ini')
       with safe_open(ini_file_name, mode='w') as fp:
         ini.write(fp)
-      args.append('--config-override=' + ini_file_name)
+      args.append('--pants-config-files=' + ini_file_name)
 
     pants_script = os.path.join(build_root or get_buildroot(), self.PANTS_SCRIPT_NAME)
 
@@ -222,7 +222,10 @@ class PantsRunIntegrationTest(unittest.TestCase):
 
     proc = subprocess.Popen(pants_command, env=env, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
-    (stdout_data, stderr_data) = proc.communicate(stdin_data)
+    communicate_fn = proc.communicate
+    if tee_output:
+      communicate_fn = SubprocessProcessHandler(proc).communicate_teeing_stdout_and_stderr
+    (stdout_data, stderr_data) = communicate_fn(stdin_data)
 
     return PantsResult(pants_command, proc.returncode, stdout_data.decode("utf-8"),
                        stderr_data.decode("utf-8"), workdir)

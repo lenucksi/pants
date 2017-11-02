@@ -8,6 +8,7 @@ from __future__ import (absolute_import, division, generators, nested_scopes, pr
 from hashlib import sha1
 
 from pants.base.payload_field import PayloadField
+from pants.source.filespec import matches_filespec
 from pants.source.source_root import SourceRootConfig
 from pants.source.wrapped_globs import FilesetWithSpec
 from pants.util.memo import memoized_property
@@ -15,6 +16,13 @@ from pants.util.memo import memoized_property
 
 class SourcesField(PayloadField):
   """A PayloadField encapsulating specified sources."""
+
+  @staticmethod
+  def _validate_sources(sources):
+    if not isinstance(sources, FilesetWithSpec):
+      raise ValueError('Expected a FilesetWithSpec. `sources` should be '
+                       'instantiated via `create_sources_field`.')
+    return sources
 
   def __init__(self, sources, ref_address=None):
     """
@@ -33,7 +41,7 @@ class SourcesField(PayloadField):
     return SourceRootConfig.global_instance().get_source_roots().find_by_path(self.rel_path)
 
   def matches(self, path):
-    return self.sources.matches(path)
+    return self.sources.matches(path) or matches_filespec(path, self.filespec)
 
   @property
   def filespec(self):
@@ -53,13 +61,8 @@ class SourcesField(PayloadField):
 
   @property
   def address(self):
-    """Returns the address this sources field refers to (used by some derived classses)"""
+    """Returns the address this sources field refers to (used by some derived classes)"""
     return self._ref_address
-
-  def has_sources(self, extension=None):
-    if not self.source_paths:
-      return False
-    return any(source.endswith(extension) for source in self.source_paths)
 
   def relative_to_buildroot(self):
     """All sources joined with their relative paths."""
@@ -70,9 +73,3 @@ class SourcesField(PayloadField):
     hasher.update(self.rel_path)
     hasher.update(self.sources.files_hash)
     return hasher.hexdigest()
-
-  def _validate_sources(self, sources):
-    if not isinstance(sources, FilesetWithSpec):
-      raise ValueError('Expected a FilesetWithSpec. `sources` should be '
-                       'instantiated via `create_sources_field`.')
-    return sources

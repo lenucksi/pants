@@ -51,6 +51,7 @@ class TestProjectsIntegrationTest(ProjectIntegrationTest):
       'testprojects/src/java/org/pantsbuild/testproject/missingjardepswhitelist:missingjardepswhitelist',
       'testprojects/src/scala/org/pantsbuild/testproject/compilation_failure',
       'testprojects/src/scala/org/pantsbuild/testproject/compilation_warnings:fatal',
+      'testprojects/src/thrift/org/pantsbuild/thrift_exports:C-without-exports',
       'testprojects/src/thrift/org/pantsbuild/thrift_linter:',
       'testprojects/src/java/org/pantsbuild/testproject/provided:c',
       'testprojects/tests/java/org/pantsbuild/testproject/dummies:failing_target',
@@ -58,6 +59,7 @@ class TestProjectsIntegrationTest(ProjectIntegrationTest):
       'testprojects/tests/java/org/pantsbuild/testproject/fail256:fail256',
       'testprojects/tests/python/pants/dummies:failing_target',
       'testprojects/tests/scala/org/pantsbuild/testproject/non_exports:C',
+      'testprojects/src/scala/org/pantsbuild/testproject/exclude_direct_dep',
       # These don't pass without special config.
       'testprojects/tests/java/org/pantsbuild/testproject/depman:new-tests',
       'testprojects/tests/java/org/pantsbuild/testproject/depman:old-tests',

@@ -1,7 +1,7 @@
 Release Process
 ===============
 
-This page describes how to make a versioned release of Pants and and
+This page describes how to make a versioned release of Pants and
 other related packages to PyPi.  If you need to release pants jvm tools
 (jars), see the
 [[JVM Artifact Release Process|pants('src/docs:release_jvm')]]
@@ -11,6 +11,10 @@ Deciding the "who", "what", and "when" of releasing is described on the
 [[Release Strategy|pants('src/docs:release_strategy')]] page. Note that for some
 lucky release managers, this may result in two or more releases in a particular week.
 
+A release is always prepared for each pantsbuild/pants branch by a green Travis CI run; ie: master,
+1.0.x, 1.1.x, etc. branches on https://github.com/pantsbuild/pants will have wheels created, tested
+and deployed to https://binaries.pantsbuild.org ready for use in a release.
+ 
 Once you know what to release, releasing pants involves:
 
 -   Preparing the release.
@@ -69,8 +73,11 @@ script fail:
         password: <fill me in>
         EOF
         
+  - The release script requires Bash 4.  If you're on MacOS you may have to run `brew install bash`,
+    as the Bash that ships with MacOS is ancient.
+    
   - Note that the release script expects your pantsbuild/pants git remote to be named `origin`.
-    If you have another name for it, you should `git rename othername origin` before running
+    If you have another name for it, you should `git remote rename othername origin` before running
     the release script, and rename it back afterwards.
 
 Prepare Release
@@ -119,8 +126,9 @@ the release manager may also need to do a release from a stable branch.*
 * ###Preparation for the release from the stable branch
   See [Release Strategy](http://www.pantsbuild.org/release_strategy.html) for more details about
   whether a release is needed from a stable branch.
-    1. Cherry pick changes that have been identified in the [backport proposals](https://docs.google.com/spreadsheets/d/12rsaVVhmSXrMVlZV6PUu5uzsKNNcceP9Lpf7rpju_IE/edit#gid=0)
-       directly to the stable branch.
+    1. Cherry pick [changes labelled needs-cherrypick][needs-cherrypick]
+       for the relevant milestone directly to the stable branch.  Note that these pull requests must have been merged into
+       master, and therefore will already be closed.
     2. In master, update `src/python/pants/notes/*.rst` to reflect all patches that were
        cherry-picked (can use `build-support/bin/release-changelog-helper.sh` to get a head start).
        For example if you were releasing 1.2.0rc1 you would edit `src/python/pants/notes/1.2.x.rst`.
@@ -128,6 +136,7 @@ the release manager may also need to do a release from a stable branch.*
     4. Cherry pick the merged notes changes from master to the release branch.
     5. In your release branch: edit and commit the version number in `src/python/pants/version.py`.
     6. Execute the release as described later on this page.
+    7. Remove the [needs-cherrypick][needs-cherrypick] label from the changes cherry-picked into the new release.
 
 Dry Run (Optional)
 ------------------
@@ -140,8 +149,8 @@ After confirming this, run.
     :::bash
     $ ./build-support/bin/release.sh -n
 
-This will perform a dry run local build of the pantsbuild.pants sdist
-and other related package sdists, install them in a virtualenv and then
+This will perform a dry run local build of the pantsbuild.pants wheel
+and other related package wheelss, install them in a virtualenv and then
 smoke test basic operations.
 
 Note that in addition to CI checking dry runs work, the release publish
@@ -157,7 +166,7 @@ Now that we've smoke-tested this release, we can publish to PyPi:
     $ ./build-support/bin/release.sh
 
 This also performs a dry run and then proceeds to upload the smoke
-tested sdists to PyPi.
+tested wheels to PyPi.
 
 Announce
 --------
@@ -186,7 +195,7 @@ Owners
 ------
 
 The following folks are set up to publish to pypi for
-pantsbuild.pants sdists:
+pantsbuild.pants wheels:
 
 Name              | Email                       | PYPI Usename
 ------------------|-----------------------------|---------------
@@ -209,13 +218,23 @@ be obtained via:
 Right now that's:
 
 - pantsbuild.pants
-- pantsbuild.pants.contrib.android
-- pantsbuild.pants.contrib.buildgen
-- pantsbuild.pants.contrib.scrooge
 - pantsbuild.pants.testinfra
+- pantsbuild.pants.contrib.android
+- pantsbuild.pants.contrib.scrooge
+- pantsbuild.pants.contrib.buildgen
+- pantsbuild.pants.contrib.go
+- pantsbuild.pants.contrib.node
+- pantsbuild.pants.contrib.python.checks
+- pantsbuild.pants.contrib.scalajs
+- pantsbuild.pants.contrib.findbugs
+- pantsbuild.pants.contrib.cpp
+- pantsbuild.pants.contrib.errorprone
+- pantsbuild.pants.contrib.jax_ws
 
 You can run the following to get a full ownership roster for each
 package :
 
     :::bash
     $ ./build-support/bin/release.sh -o
+
+[needs-cherrypick]: https://github.com/pantsbuild/pants/pulls?q=is%3Apr+label%3Aneeds-cherrypick

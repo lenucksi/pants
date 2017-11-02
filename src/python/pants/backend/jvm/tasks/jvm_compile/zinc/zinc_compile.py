@@ -17,11 +17,12 @@ from xml.etree import ElementTree
 from pants.backend.jvm.subsystems.java import Java
 from pants.backend.jvm.subsystems.jvm_platform import JvmPlatform
 from pants.backend.jvm.subsystems.scala_platform import ScalaPlatform
-from pants.backend.jvm.subsystems.shader import Shader
+from pants.backend.jvm.subsystems.zinc import Zinc
 from pants.backend.jvm.targets.annotation_processor import AnnotationProcessor
 from pants.backend.jvm.targets.javac_plugin import JavacPlugin
 from pants.backend.jvm.targets.jvm_target import JvmTarget
 from pants.backend.jvm.targets.scalac_plugin import ScalacPlugin
+from pants.backend.jvm.tasks.classpath_util import ClasspathUtil
 from pants.backend.jvm.tasks.jvm_compile.analysis_tools import AnalysisTools
 from pants.backend.jvm.tasks.jvm_compile.jvm_compile import JvmCompile
 from pants.backend.jvm.tasks.jvm_compile.zinc.zinc_analysis import ZincAnalysis
@@ -31,7 +32,6 @@ from pants.base.exceptions import TaskError
 from pants.base.hash_utils import hash_file
 from pants.base.workunit import WorkUnitLabel
 from pants.java.distribution.distribution import DistributionLocator
-from pants.java.jar.jar_dependency import JarDependency
 from pants.util.contextutil import open_zip
 from pants.util.dirutil import safe_open
 from pants.util.memo import memoized_method, memoized_property
@@ -52,8 +52,6 @@ logger = logging.getLogger(__name__)
 
 class BaseZincCompile(JvmCompile):
   """An abstract base class for zinc compilation tasks."""
-
-  _ZINC_MAIN = 'org.pantsbuild.zinc.Main'
 
   _supports_concurrent_execution = True
 
@@ -122,7 +120,7 @@ class BaseZincCompile(JvmCompile):
 
   @classmethod
   def implementation_version(cls):
-    return super(BaseZincCompile, cls).implementation_version() + [('BaseZincCompile', 5)]
+    return super(BaseZincCompile, cls).implementation_version() + [('BaseZincCompile', 6)]
 
   @classmethod
   def compiler_plugin_types(cls):
@@ -159,11 +157,6 @@ class BaseZincCompile(JvmCompile):
   def register_options(cls, register):
     super(BaseZincCompile, cls).register_options(register)
     # TODO: Sort out JVM compile config model: https://github.com/pantsbuild/pants/issues/4483.
-    register('--name-hashing', advanced=True, type=bool, fingerprint=True,
-             removal_hint='Name hashing is required for operation in zinc 1.0.0-X: this '
-                          'option no longer has any effect.',
-             removal_version='1.4.0.dev0',
-             help='Use zinc name hashing.')
     register('--whitelisted-args', advanced=True, type=dict,
              default={
                '-S.*': False,
@@ -186,44 +179,13 @@ class BaseZincCompile(JvmCompile):
                   'This is unset by default, because it is generally a good precaution to cache '
                   'only clean/cold builds.')
 
-    def sbt_jar(name, **kwargs):
-      return JarDependency(org='org.scala-sbt', name=name, rev='1.0.0-X5', **kwargs)
+    Zinc.register_options_for(cls, register,
+                              removal_version='1.6.0.dev0',
+                              removal_hint='Zinc tools should be registered via the `zinc` scope.')
 
-    shader_rules = [
-        # The compiler-interface and compiler-bridge tool jars carry xsbt and
-        # xsbti interfaces that are used across the shaded tool jar boundary so
-        # we preserve these root packages wholesale along with the core scala
-        # APIs.
-        Shader.exclude_package('scala', recursive=True),
-        Shader.exclude_package('xsbt', recursive=True),
-        Shader.exclude_package('xsbti', recursive=True),
-      ]
-
-    cls.register_jvm_tool(register,
-                          'zinc',
-                          classpath=[
-                            JarDependency('org.pantsbuild', 'zinc_2.10', '0.0.5'),
-                          ],
-                          main=cls._ZINC_MAIN,
-                          custom_rules=shader_rules)
-
-    cls.register_jvm_tool(register,
-                          'compiler-bridge',
-                          classpath=[
-                            sbt_jar(name='compiler-bridge_2.10',
-                                    classifier='sources',
-                                    intransitive=True)
-                          ])
-    cls.register_jvm_tool(register,
-                          'compiler-interface',
-                          classpath=[
-                            sbt_jar(name='compiler-interface')
-                          ],
-                          # NB: We force a noop-jarjar'ing of the interface, since it is now broken
-                          # up into multiple jars, but zinc does not yet support a sequence of jars
-                          # for the interface.
-                          main='no.such.main.Main',
-                          custom_rules=shader_rules)
+  @classmethod
+  def subsystem_dependencies(cls):
+    return super(BaseZincCompile, cls).subsystem_dependencies() + (Zinc,)
 
   @classmethod
   def prepare(cls, options, round_manager):
@@ -243,6 +205,28 @@ class BaseZincCompile(JvmCompile):
   def cache_incremental(self):
     """Optionally write the results of incremental compiles to the cache."""
     return self.get_options().incremental_caching
+
+  @memoized_property
+  def _zinc_tools(self):
+    """Get the instance of the JvmToolMixin to use for zinc.
+
+    TODO: Remove and use Zinc.global_instance() directly once the old tool location is removed
+    in `1.6.0.dev0`.
+    """
+    # If any tools were explicitly specified on self, use them... else, use the Zinc subsystem.
+    explicit_keys = set(self.get_options().get_explicit_keys())
+    explicit_on_self = explicit_keys & set(['zinc', 'compiler-bridge', 'compiler-interface'])
+    return self if explicit_on_self else Zinc.global_instance()
+
+  def _zinc_tool_classpath(self, toolname):
+    return self._zinc_tools.tool_classpath_from_products(self.context.products,
+                                                         toolname,
+                                                         scope=self.options_scope)
+
+  def _zinc_tool_jar(self, toolname):
+    return self._zinc_tools.tool_jar_from_products(self.context.products,
+                                                   toolname,
+                                                   scope=self.options_scope)
 
   def __init__(self, *args, **kwargs):
     super(BaseZincCompile, self).__init__(*args, **kwargs)
@@ -264,9 +248,6 @@ class BaseZincCompile(JvmCompile):
   def create_analysis_tools(self):
     return AnalysisTools(self.dist.real_home, ZincAnalysisParser(), ZincAnalysis,
                          get_buildroot(), self.get_options().pants_workdir)
-
-  def zinc_classpath(self):
-    return self.tool_classpath('zinc')
 
   def javac_classpath(self):
     # Note that if this classpath is empty then Zinc will automatically use the javac from
@@ -302,7 +283,8 @@ class BaseZincCompile(JvmCompile):
     """
     hasher = sha1()
     for tool in ['zinc', 'compiler-interface', 'compiler-bridge']:
-      hasher.update(os.path.relpath(self.tool_jar(tool), self.get_options().pants_workdir))
+      hasher.update(os.path.relpath(self._zinc_tool_jar(tool),
+                                    self.get_options().pants_workdir))
     key = hasher.hexdigest()[:12]
     return os.path.join(self.get_options().pants_bootstrapdir, 'zinc', key)
 
@@ -325,24 +307,25 @@ class BaseZincCompile(JvmCompile):
     if log_file:
       zinc_args.extend(['-capture-log', log_file])
 
-    zinc_args.extend(['-compiler-interface', self.tool_jar('compiler-interface')])
-    zinc_args.extend(['-compiler-bridge', self.tool_jar('compiler-bridge')])
+    zinc_args.extend(['-compiler-interface', self._zinc_tool_jar('compiler-interface')])
+    zinc_args.extend(['-compiler-bridge', self._zinc_tool_jar('compiler-bridge')])
     zinc_args.extend(['-zinc-cache-dir', self._zinc_cache_dir])
     zinc_args.extend(['-scala-path', ':'.join(self.scalac_classpath())])
 
     zinc_args.extend(self._javac_plugin_args(javac_plugin_map))
-    # Search for scalac plugins on the entire classpath, which will allow use of
-    # in-repo plugins for scalac (which works naturally for javac).
+    # Search for scalac plugins on the classpath.
     # Note that:
-    # - At this point the classpath will already have the extra_compile_time_classpath_elements()
-    #   appended to it, so those will also get searched here.
+    # - We also search in the extra scalac plugin dependencies, if specified.
     # - In scala 2.11 and up, the plugin's classpath element can be a dir, but for 2.10 it must be
     #   a jar.  So in-repo plugins will only work with 2.10 if --use-classpath-jars is true.
     # - We exclude our own classes_output_dir, because if we're a plugin ourselves, then our
     #   classes_output_dir doesn't have scalac-plugin.xml yet, and we don't want that fact to get
     #   memoized (which in practice will only happen if this plugin uses some other plugin, thus
     #   triggering the plugin search mechanism, which does the memoizing).
-    scalac_plugin_search_classpath = set(classpath) - {classes_output_dir}
+    scalac_plugin_search_classpath = (
+      (set(classpath) | set(self.scalac_plugin_classpath_elements())) -
+      {classes_output_dir}
+    )
     zinc_args.extend(self._scalac_plugin_args(scalac_plugin_map, scalac_plugin_search_classpath))
     if upstream_analysis:
       zinc_args.extend(['-analysis-map',
@@ -382,8 +365,8 @@ class BaseZincCompile(JvmCompile):
         fp.write(arg)
         fp.write(b'\n')
 
-    if self.runjava(classpath=self.zinc_classpath(),
-                    main=self._ZINC_MAIN,
+    if self.runjava(classpath=self._zinc_tool_classpath('zinc'),
+                    main=Zinc.ZINC_COMPILE_MAIN,
                     jvm_options=jvm_options,
                     args=zinc_args,
                     workunit_name=self.name(),
@@ -425,22 +408,37 @@ class BaseZincCompile(JvmCompile):
       ret.append('-C-Xplugin:{} {}'.format(plugin, ' '.join(args)))
     return ret
 
-  @classmethod
-  def _scalac_plugin_args(cls, scalac_plugin_map, classpath):
+  def _scalac_plugin_args(self, scalac_plugin_map, classpath):
     if not scalac_plugin_map:
       return []
 
-    plugin_jar_map = cls._find_scalac_plugins(scalac_plugin_map.keys(), classpath)
+    plugin_jar_map = self._find_scalac_plugins(scalac_plugin_map.keys(), classpath)
     ret = []
-    for name, jar in plugin_jar_map.items():
-      ret.append('-S-Xplugin:{}'.format(jar))
+    for name, cp_entries in plugin_jar_map.items():
+      # Note that the first element in cp_entries is the one containing the plugin's metadata,
+      # meaning that this is the plugin that will be loaded, even if there happen to be other
+      # plugins in the list of entries (e.g., because this plugin depends on another plugin).
+      ret.append('-S-Xplugin:{}'.format(':'.join(cp_entries)))
       for arg in scalac_plugin_map[name]:
         ret.append('-S-P:{}:{}'.format(name, arg))
     return ret
 
-  @classmethod
-  def _find_scalac_plugins(cls, scalac_plugins, classpath):
-    """Returns a map from plugin name to plugin jar/dir."""
+  def _find_scalac_plugins(self, scalac_plugins, classpath):
+    """Returns a map from plugin name to list of plugin classpath entries.
+
+    The first entry in each list is the classpath entry containing the plugin metadata.
+    The rest are the internal transitive deps of the plugin.
+
+    This allows us to have in-repo plugins with dependencies (unlike javac, scalac doesn't load
+    plugins or their deps from the regular classpath, so we have to provide these entries
+    separately, in the -Xplugin: flag).
+
+    Note that we don't currently support external plugins with dependencies, as we can't know which
+    external classpath elements are required, and we'd have to put the entire external classpath
+    on each -Xplugin: flag, which seems excessive.
+    Instead, external plugins should be published as "fat jars" (which appears to be the norm,
+    since SBT doesn't support plugins with dependencies anyway).
+    """
     # Allow multiple flags and also comma-separated values in a single flag.
     plugin_names = set([p for val in scalac_plugins for p in val.split(',')])
     if not plugin_names:
@@ -449,17 +447,24 @@ class BaseZincCompile(JvmCompile):
     active_plugins = {}
     buildroot = get_buildroot()
 
+    cp_product = self.context.products.get_data('runtime_classpath')
     for classpath_element in classpath:
-      name = cls._maybe_get_plugin_name(classpath_element)
+      name = self._maybe_get_plugin_name(classpath_element)
       if name in plugin_names:
+        plugin_target_closure = self._plugin_targets('scalac').get(name, [])
         # It's important to use relative paths, as the compiler flags get embedded in the zinc
         # analysis file, and we port those between systems via the artifact cache.
-        rel_classpath_element = os.path.relpath(classpath_element, buildroot)
+        rel_classpath_elements = [
+          os.path.relpath(cpe, buildroot) for cpe in
+          ClasspathUtil.internal_classpath(plugin_target_closure, cp_product, self._confs)]
+        # If the plugin is external then rel_classpath_elements will be empty, so we take
+        # just the external jar itself.
+        rel_classpath_elements = rel_classpath_elements or [classpath_element]
         # Some classpath elements may be repeated, so we allow for that here.
-        if active_plugins.get(name, rel_classpath_element) != rel_classpath_element:
+        if active_plugins.get(name, rel_classpath_elements) != rel_classpath_elements:
           raise TaskError('Plugin {} defined in {} and in {}'.format(name, active_plugins[name],
                                                                      classpath_element))
-        active_plugins[name] = rel_classpath_element
+        active_plugins[name] = rel_classpath_elements
         if len(active_plugins) == len(plugin_names):
           # We've found all the plugins, so return now to spare us from processing
           # of the rest of the classpath for no reason.
@@ -529,9 +534,18 @@ class ZincCompile(BaseZincCompile):
   def product_types(cls):
     return ['runtime_classpath', 'classes_by_source', 'product_deps_by_src', 'zinc_args']
 
+  @memoized_method
   def extra_compile_time_classpath_elements(self):
-    """Classpath entries containing plugins."""
-    return self.tool_classpath('javac-plugin-dep') + self.tool_classpath('scalac-plugin-dep')
+    # javac plugins are loaded from the regular class entries containing javac plugins,
+    # so we can provide them here.
+    # Note that, unlike javac, scalac plugins are not loaded from the regular classpath,
+    # so we don't provide them here.
+    return self.tool_classpath('javac-plugin-dep')
+
+  @memoized_method
+  def scalac_plugin_classpath_elements(self):
+    """Classpath entries containing scalac plugins."""
+    return self.tool_classpath('scalac-plugin-dep')
 
   def select(self, target):
     # Require that targets are marked for JVM compilation, to differentiate from

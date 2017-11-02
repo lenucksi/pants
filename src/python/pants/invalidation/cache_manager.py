@@ -12,7 +12,7 @@ from hashlib import sha1
 
 from pants.build_graph.build_graph import sort_targets
 from pants.build_graph.target import Target
-from pants.invalidation.build_invalidator import BuildInvalidator, CacheKeyGenerator
+from pants.invalidation.build_invalidator import CacheKey
 from pants.util.dirutil import relative_symlink, safe_delete, safe_mkdir, safe_rmtree
 from pants.util.memo import memoized_method
 
@@ -54,15 +54,17 @@ class VersionedTargetSet(object):
     self.targets = [vt.target for vt in versioned_targets]
 
     # The following line is a no-op if cache_key was set in the VersionedTarget __init__ method.
-    self.cache_key = CacheKeyGenerator.combine_cache_keys([vt.cache_key
-                                                           for vt in versioned_targets])
+    self.cache_key = CacheKey.combine_cache_keys([vt.cache_key for vt in versioned_targets])
     # NB: previous_cache_key may be None on the first build of a target.
     self.previous_cache_key = cache_manager.previous_key(self.cache_key)
     self.valid = self.previous_cache_key == self.cache_key
 
     if cache_manager.invalidation_report:
-      cache_manager.invalidation_report.add_vts(cache_manager, self.targets, self.cache_key,
-                                                self.valid, phase='init')
+      cache_manager.invalidation_report.add_vts(cache_manager.task_name,
+                                                self.targets,
+                                                self.cache_key,
+                                                self.valid,
+                                                phase='init')
 
     self._results_dir = None
     self._current_results_dir = None
@@ -70,6 +72,15 @@ class VersionedTargetSet(object):
     # True if the results_dir for this VT was created incrementally via clone of the
     # previous results_dir.
     self.is_incremental = False
+
+  @property
+  def cacheable(self):
+    """Indicates whether artifacts associated with this target set should be cached.
+
+    :return: `True` if this target set's associated artifacts can be cached.
+    :rtype: bool
+    """
+    return self._cache_manager.cacheable(self.cache_key)
 
   def update(self):
     self._cache_manager.update(self)
@@ -156,8 +167,7 @@ class VersionedTargetSet(object):
 
 
 class VersionedTarget(VersionedTargetSet):
-  """This class represents a singleton VersionedTargetSet, and has links to VersionedTargets that
-  the wrapped target depends on (after having resolved through any "alias" targets.
+  """This class represents a singleton VersionedTargetSet.
 
   :API: public
   """
@@ -175,6 +185,15 @@ class VersionedTarget(VersionedTargetSet):
     super(VersionedTarget, self).__init__(cache_manager, [self])
     self.id = target.id
 
+  @property
+  def cacheable(self):
+    """Indicates whether artifacts associated with this target should be cached.
+
+    :return: `True` if this target's associated artifacts can be cached.
+    :rtype: bool
+    """
+    return super(VersionedTarget, self).cacheable and not self.target.has_label('no_cache')
+
   def create_results_dir(self):
     """Ensure that the empty results directory and a stable symlink exist for these versioned targets."""
     self._current_results_dir = self._cache_manager.results_dir_path(self.cache_key, stable=False)
@@ -186,13 +205,14 @@ class VersionedTarget(VersionedTargetSet):
       relative_symlink(self._current_results_dir, self._results_dir)
     self.ensure_legal()
 
-  def copy_previous_results(self, root_dir):
+  def copy_previous_results(self):
     """Use the latest valid results_dir as the starting contents of the current results_dir.
 
-    Should be called after the cache is checked, since previous_results are not useful if there is a cached artifact.
+    Should be called after the cache is checked, since previous_results are not useful if there is
+    a cached artifact.
     """
-    # TODO(mateo): An immediate followup removes the root_dir param, it is identical to the task.workdir.
-    # TODO(mateo): This should probably be managed by the task, which manages the rest of the incremental support.
+    # TODO(mateo): This should probably be managed by the task, which manages the rest of the
+    # incremental support.
     if not self.previous_cache_key:
       return None
     previous_path = self._cache_manager.results_dir_path(self.previous_cache_key, stable=False)
@@ -245,7 +265,7 @@ class InvalidationCacheManager(object):
   def __init__(self,
                results_dir_root,
                cache_key_generator,
-               build_invalidator_dir,
+               build_invalidator,
                invalidate_dependents,
                fingerprint_strategy=None,
                invalidation_report=None,
@@ -259,7 +279,7 @@ class InvalidationCacheManager(object):
     self._task_name = task_name or 'UNKNOWN'
     self._task_version = task_version or 'Unknown_0'
     self._invalidate_dependents = invalidate_dependents
-    self._invalidator = BuildInvalidator(build_invalidator_dir)
+    self._invalidator = build_invalidator
     self._fingerprint_strategy = fingerprint_strategy
     self._artifact_write_callback = artifact_write_callback
     self.invalidation_report = invalidation_report
@@ -348,6 +368,14 @@ class InvalidationCacheManager(object):
         if target_key is not None:
           yield VersionedTarget(self, target, target_key)
     return list(vt_iter())
+
+  def cacheable(self, cache_key):
+    """Indicates whether artifacts associated with the given `cache_key` should be cached.
+
+    :return: `True` if the `cache_key` represents a cacheable set of target artifacts.
+    :rtype: bool
+    """
+    return self._invalidator.cacheable(cache_key)
 
   def previous_key(self, cache_key):
     return self._invalidator.previous_key(cache_key)
