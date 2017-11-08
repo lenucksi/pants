@@ -30,6 +30,7 @@ impl Store {
     // 2 DBs; one for file contents, one for directories.
     let env = Environment::new()
       .set_max_dbs(2)
+      .set_map_size(16 * 1024 * 1024 * 1024)
       .open(path.as_ref())
       .map_err(|e| format!("Error making env: {}", e.description()))?;
     let file_database = env
@@ -76,11 +77,24 @@ impl Store {
     }
   }
 
-  pub fn load_bytes(&self, fingerprint: &Fingerprint) -> Result<Option<Vec<u8>>, String> {
+  pub fn load_file_bytes(&self, fingerprint: &Fingerprint) -> Result<Option<Vec<u8>>, String> {
+    self.load_bytes(fingerprint, self.file_store.clone())
+  }
+
+  pub fn load_directory_proto_bytes(
+    &self,
+    fingerprint: &Fingerprint,
+  ) -> Result<Option<Vec<u8>>, String> {
+    self.load_bytes(fingerprint, self.directory_store.clone())
+  }
+
+  pub fn load_bytes(
+    &self,
+    fingerprint: &Fingerprint,
+    db: Database,
+  ) -> Result<Option<Vec<u8>>, String> {
     match self.env.begin_ro_txn().and_then(|txn| {
-      txn.get(self.file_store.clone(), fingerprint).map(
-        |v| v.to_vec(),
-      )
+      txn.get(db, fingerprint).map(|v| v.to_vec())
     }) {
       Ok(v) => Ok(Some(v)),
       Err(NotFound) => Ok(None),
@@ -182,7 +196,7 @@ mod tests {
     assert_eq!(
       Store::new(dir.path())
         .unwrap()
-        .load_bytes(&fingerprint)
+        .load_file_bytes(&fingerprint)
         .unwrap()
         .unwrap(),
       bogus_value
@@ -200,7 +214,7 @@ mod tests {
     assert_eq!(
       &Store::new(dir.path())
         .unwrap()
-        .load_bytes(&fingerprint)
+        .load_file_bytes(&fingerprint)
         .unwrap()
         .unwrap(),
       &Vec::from(bogus_value)
@@ -214,7 +228,7 @@ mod tests {
 
     let store = Store::new(dir.path()).unwrap();
     let hash = store.store_file_bytes(&data).unwrap();
-    assert_eq!(store.load_bytes(&hash).unwrap().unwrap(), data);
+    assert_eq!(store.load_file_bytes(&hash).unwrap().unwrap(), data);
   }
 
   #[test]
@@ -223,7 +237,7 @@ mod tests {
     assert_eq!(
       Store::new(dir.path())
         .unwrap()
-        .load_bytes(&Fingerprint::from_hex_string(HASH).unwrap())
+        .load_file_bytes(&Fingerprint::from_hex_string(HASH).unwrap())
         .unwrap(),
       None
     );
